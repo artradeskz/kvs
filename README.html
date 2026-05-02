@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>КВС - Ассемблер с русским синтаксисом</title>
+    <style>
+        /* Сброс и базовые настройки */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', 'Courier', monospace;
+            font-size: 14px;
+            line-height: 1.4;
+            color: #00ff00;
+            background-color: #000000;
+            background-image: 
+                linear-gradient(rgba(0, 20, 0, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 20, 0, 0.1) 1px, transparent 1px);
+            background-size: 20px 20px;
+            padding: 20px;
+            min-height: 100vh;
+            text-shadow: 0 0 5px rgba(0, 255, 0, 0.3);
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 16px;
+            background-color: #00ff00;
+            margin-left: 2px;
+            vertical-align: text-bottom;
+            animation: blink 1s infinite;
+        }
+
+        .terminal {
+            max-width: 1200px;
+            margin: 0 auto;
+            border: 2px solid #00aa00;
+            padding: 20px;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.2), inset 0 0 20px rgba(0, 255, 0, 0.1);
+        }
+
+        .terminal::before {
+            content: "┌───[ КВС v2.0 ]───┐";
+            position: absolute;
+            top: -11px;
+            left: 20px;
+            background: #000;
+            padding: 0 10px;
+            font-size: 12px;
+            color: #00aa00;
+        }
+
+        .terminal::after {
+            content: "└─────────────────────┘";
+            position: absolute;
+            bottom: -11px;
+            right: 20px;
+            background: #000;
+            padding: 0 10px;
+            font-size: 12px;
+            color: #00aa00;
+        }
+
+        h1, h2, h3, h4 {
+            color: #00ff00;
+            margin: 25px 0 15px 0;
+            border-bottom: 1px dashed #00aa00;
+            padding-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #00ff88;
+            text-align: center;
+            margin-top: 0;
+            padding: 10px;
+            border: 1px solid #00aa00;
+            background: rgba(0, 20, 0, 0.3);
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #00ff66;
+        }
+
+        h3 {
+            font-size: 16px;
+            color: #00ff44;
+        }
+
+        p {
+            margin: 15px 0;
+            text-align: justify;
+        }
+
+        ul, ol {
+            margin: 15px 0 15px 30px;
+        }
+
+        li {
+            margin: 8px 0;
+            position: relative;
+        }
+
+        li::before {
+            content: "›";
+            color: #00ff00;
+            position: absolute;
+            left: -15px;
+        }
+
+        a {
+            color: #00ffff;
+            text-decoration: none;
+            border-bottom: 1px dotted #00aaaa;
+        }
+
+        a:hover {
+            color: #ffff00;
+            border-bottom: 1px solid #ffff00;
+            text-shadow: 0 0 10px rgba(255, 255, 0, 0.5);
+        }
+
+        code, pre {
+            font-family: 'Courier New', monospace;
+            background: rgba(0, 30, 0, 0.5);
+            border: 1px solid #005500;
+            padding: 15px;
+            margin: 15px 0;
+            display: block;
+            overflow-x: auto;
+            white-space: pre;
+            color: #88ff88;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }
+
+        pre::before {
+            content: "┌──[ код ]";
+            position: absolute;
+            top: -10px;
+            left: 10px;
+            background: #000;
+            padding: 0 5px;
+            font-size: 11px;
+            color: #00aa00;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            border: 1px solid #005500;
+        }
+
+        th {
+            background: rgba(0, 40, 0, 0.5);
+            color: #00ff88;
+            padding: 10px;
+            border: 1px solid #005500;
+            text-align: left;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 12px;
+        }
+
+        td {
+            padding: 10px;
+            border: 1px solid #005500;
+            color: #88ff88;
+            vertical-align: top;
+        }
+
+        tr:nth-child(even) {
+            background: rgba(0, 25, 0, 0.3);
+        }
+
+        tr:hover {
+            background: rgba(0, 50, 0, 0.4);
+        }
+
+        .note {
+            border-left: 3px solid #ffff00;
+            padding: 15px;
+            margin: 20px 0;
+            background: rgba(40, 40, 0, 0.2);
+            color: #ffff88;
+        }
+
+        .warning {
+            border-left: 3px solid #ff4444;
+            padding: 15px;
+            margin: 20px 0;
+            background: rgba(40, 0, 0, 0.2);
+            color: #ff8888;
+        }
+
+        .process-diagram {
+            text-align: center;
+            margin: 30px 0;
+            font-family: monospace;
+            white-space: pre;
+            color: #00ffaa;
+            background: rgba(0, 20, 0, 0.3);
+            padding: 20px;
+            border: 1px dashed #00aa00;
+            overflow-x: auto;
+        }
+
+        footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #005500;
+            text-align: center;
+            color: #00aa00;
+            font-size: 12px;
+        }
+
+        .typewriter {
+            overflow: hidden;
+            border-right: 3px solid #00ff00;
+            white-space: nowrap;
+            margin: 0 auto;
+            animation: typing 3.5s steps(40, end), blink-caret 0.75s step-end infinite;
+        }
+
+        @keyframes typing {
+            from { width: 0; }
+            to { width: 100%; }
+        }
+
+        @keyframes blink-caret {
+            from, to { border-color: transparent; }
+            50% { border-color: #00ff00; }
+        }
+
+        .ascii-art {
+            text-align: center;
+            margin: 30px 0;
+            font-family: monospace;
+            color: #00ff88;
+            line-height: 1.2;
+            white-space: pre;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+
+        .ascii-art-box {
+            display: inline-block;
+            border: none;
+            background: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+                font-size: 12px;
+            }
+            .terminal {
+                padding: 15px;
+            }
+            h1 {
+                font-size: 18px;
+            }
+            h2 {
+                font-size: 16px;
+            }
+            table {
+                font-size: 11px;
+            }
+            pre, code {
+                font-size: 11px;
+                padding: 10px;
+            }
+            .ascii-art {
+                font-size: 10px;
+                overflow-x: auto;
+            }
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 20, 0, 0.3);
+            border: 1px solid #005500;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #005500;
+            border: 1px solid #00aa00;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00aa00;
+        }
+    </style>
+</head>
+<body>
+<div class="terminal">
+    <h1 class="typewriter">КВС — Ассемблер с русским синтаксисом для x86-64</h1>
+
+    <div style="text-align: center; margin: 30px 0; color: #00ff88;">
+        <div class="ascii-art">
+<pre class="ascii-art-box">
+╔══════════════════════════════════╗
+║   ██╗  ██╗  ██╗   ██╗  ███████╗  ║
+║   ██║ ██╔╝  ██╗   ██╗  ██╔════╝  ║
+║   █████╔╝   ██╗   ██╗  ███████╗  ║
+║   ██║╚██╗   ╚██╗ ██╔╝  ╚════██║  ║
+║   ██║ ╚██╗    ╚██╔╝    ███████║  ║
+║   ╚═╝  ╚═╝     ╚═╝     ╚══════╝  ║
+╚══════════════════════════════════╝
+</pre>
+        </div>
+        <p>Версия 2.0 | Экспериментальный проект | 2025</p>
+    </div>
+
+    <h2>┌──[ ОГЛАВЛЕНИЕ ]────────────────────────────────────────────┐</h2>
+    <ul style="columns: 2; column-gap: 40px;">
+        <li><a href="#назначение">Назначение и концепция</a></li>
+        <li><a href="#особенности">Особенности и возможности</a></li>
+        <li><a href="#архитектура">Архитектура и процесс сборки</a></li>
+        <li><a href="#установка">Установка и запуск</a></li>
+        <li><a href="#синтаксис">Синтаксис исходных файлов (.квс)</a></li>
+        <li><a href="#команды">Система команд</a></li>
+        <li><a href="#регистры">Регистры процессора</a></li>
+        <li><a href="#директивы">Директивы ассемблера</a></li>
+        <li><a href="#примеры">Примеры программ</a></li>
+        <li><a href="#трансляция">Процесс трансляции</a></li>
+        <li><a href="#ограничения">Ограничения</a></li>
+    </ul>
+    <h2>└──────────────────────────────────────────────────────────────┘</h2>
+
+    <h2 id="назначение">НАЗНАЧЕНИЕ И КОНЦЕПЦИЯ</h2>
+    <p><strong>КВС</strong> — это ассемблер для архитектуры x86-64, полностью использующий <strong>русскую лексику</strong> для мнемоник инструкций, имён регистров и директив. Проект носит <strong>образовательный и экспериментальный характер</strong> и демонстрирует принципы работы ассемблера, построения ELF-файлов и трансляции высокоуровневых концепций в машинный код.</p>
+
+    <div class="note">
+        <strong>Ключевые принципы проекта:</strong>
+        <ul>
+            <li><strong>Русскоязычный синтаксис</strong> — все инструкции, регистры и директивы на кириллице</li>
+            <li><strong>Модульная архитектура</strong> — лексер, парсер, два прохода, сборщик ELF</li>
+            <li><strong>Минимализм зависимостей</strong> — только стандартная библиотека Python</li>
+            <li><strong>Подготовка к самокомпиляции</strong> — архитектура, допускающая написание компилятора на самом КВС</li>
+        </ul>
+    </div>
+
+    <h2 id="особенности">ОСОБЕННОСТИ И ВОЗМОЖНОСТИ</h2>
+    <ul>
+        <li><strong>Полностью русский синтаксис</strong> — <code>переместить</code>, <code>прибавить</code>, <code>вызвать</code>, регистры <code>раикс</code>, <code>есипи</code>, <code>ал</code>, директивы <code>.текст</code>, <code>.данные</code></li>
+        <li><strong>Генерация исполняемых ELF-файлов</strong> — 64-битные ELF для Linux, готовые к запуску</li>
+        <li><strong>Двухпроходная сборка</strong> — традиционная схема с разрешением меток</li>
+        <li><strong>Поддержка секций</strong> — разделение на <code>.текст</code> (код) и <code>.данные</code> (данные)</li>
+        <li><strong>CSV-логирование</strong> — детальный файл <code>.csv</code> с соответствием адресов, байтов и исходных команд</li>
+        <li><strong>Более 50 инструкций</strong> — полный набор основных команд x86-64</li>
+    </ul>
+
+    <h2 id="архитектура">АРХИТЕКТУРА И ПРОЦЕСС СБОРКИ</h2>
+    <div class="process-diagram">
+Исходный файл (.квс)
+        │
+        ▼ (kvs_lexer.py)
+Файл токенов (.токены)
+        │
+        ▼ (kvs_parser.py)
+AST-представление (.аст)
+        │
+        ▼ (kvs_pass1.py)
+Первый проход: размеры, метки (.проход1)
+        │
+        ▼ (kvs_pass2.py)
+Второй проход: генерация кода (.csv)
+        │
+        ▼ (kvs_builder.py)
+ELF-компоновщик (.elf)
+
+Исполняемый файл!
+    </div>
+
+    <h2 id="установка">УСТАНОВКА И ЗАПУСК</h2>
+    <pre># Клонирование репозитория
+git clone https://github.com/username/kvs.git
+cd kvs
+
+# Установка прав на выполнение (при необходимости)
+chmod +x kvs_build.py
+
+# Компиляция программы
+python3 kvs_build.py программа.квс
+
+# Запуск скомпилированной программы
+./программа.elf</pre>
+
+    <h2 id="синтаксис">СИНТАКСИС ИСХОДНЫХ ФАЙЛОВ (.квс)</h2>
+    <pre>; Комментарий начинается с точки с запятой
+
+.данные                     ; Начало секции данных
+    message: .строка_нуль "Привет, мир!"
+    counter: .байт 0x0A
+
+.текст                      ; Начало секции кода
+.глобал _start              ; Точка входа
+
+_start:
+    ; Аргументы для write(1, message, 13)
+    переместить_имм раикс, 1
+    загрузить_адрес рсиай, message
+    переместить_имм рдикс, 13
+    вызов_системы
+
+    ; Выход с кодом 0
+    переместить_имм раикс, 60
+    переместить_имм рдикс, 0
+    вызов_системы</pre>
+
+    <h2 id="команды">СИСТЕМА КОМАНД</h2>
+    <table>
+        <tr><th>Категория</th><th>Примеры инструкций</th><th>Соответствие NASM</th></tr>
+        <tr><td>Перемещение данных</td><td><code>переместить</code>, <code>загрузить</code>, <code>сохранить</code>, <code>переместить_имм</code></td><td><code>mov</code>, <code>lea</code></td></tr>
+        <tr><td>Арифметика</td><td><code>прибавить</code>, <code>вычесть</code>, <code>умножить</code>, <code>разделить</code>, <code>увеличить</code>, <code>уменьшить</code></td><td><code>add</code>, <code>sub</code>, <code>mul</code>, <code>div</code>, <code>inc</code>, <code>dec</code></td></tr>
+        <tr><td>Логические</td><td><code>и</code>, <code>или</code>, <code>исключающее_или</code>, <code>инвертировать</code>, <code>отрицать</code></td><td><code>and</code>, <code>or</code>, <code>xor</code>, <code>not</code>, <code>neg</code></td></tr>
+        <tr><td>Сравнение и проверка</td><td><code>сравнить</code>, <code>сравнить_с</code>, <code>проверить</code></td><td><code>cmp</code>, <code>test</code></td></tr>
+        <tr><td>Условные переходы</td><td><code>переход_если_равно</code>, <code>переход_если_больше</code>, <code>короткий_переход_если_равно</code></td><td><code>je</code>, <code>jg</code>, <code>je short</code></td></tr>
+        <tr><td>Безусловные переходы</td><td><code>переход</code>, <code>короткий_переход</code>, <code>вызвать</code>, <code>вернуться</code></td><td><code>jmp</code>, <code>jmp short</code>, <code>call</code>, <code>ret</code></td></tr>
+        <tr><td>Стек</td><td><code>втолкнуть</code>, <code>вытолкнуть</code>, <code>втолкнуть_непосредственно</code></td><td><code>push</code>, <code>pop</code>, <code>push imm</code></td></tr>
+        <tr><td>Сдвиги и вращения</td><td><code>сдвиг_влево</code>, <code>сдвиг_вправо</code>, <code>вращать_влево</code>, <code>вращать_вправо</code></td><td><code>shl</code>, <code>shr</code>, <code>rol</code>, <code>ror</code></td></tr>
+        <tr><td>Без операндов</td><td><code>нет_операции</code>, <code>вызов_системы</code>, <code>остановить</code>, <code>отладка</code></td><td><code>nop</code>, <code>syscall</code>, <code>hlt</code>, <code>int3</code></td></tr>
+        <tr><td>Строковые</td><td><code>переместить_байт</code>, <code>сравнить_байты</code></td><td><code>movsb</code>, <code>cmpsb</code></td></tr>
+    </table>
+
+    <h2 id="регистры">РЕГИСТРЫ ПРОЦЕССОРА</h2>
+    <table>
+        <tr><th>64-битные</th><th>32-битные</th><th>16-битные</th><th>8-битные (мл.)</th><th>8-битные (ст.)</th></tr>
+        <tr><td><code>раикс</code></td><td><code>еаикс</code></td><td><code>аикс</code></td><td><code>ал</code></td><td><code>аш</code></td></tr>
+        <tr><td><code>рбикс</code></td><td><code>ебикс</code></td><td><code>бикс</code></td><td><code>бл</code></td><td><code>бш</code></td></tr>
+        <tr><td><code>рсикс</code></td><td><code>есикс</code></td><td><code>сикс</code></td><td><code>кл</code></td><td><code>чш</code></td></tr>
+        <tr><td><code>рдикс</code></td><td><code>едикс</code></td><td><code>дикс</code></td><td><code>дл</code></td><td><code>дш</code></td></tr>
+        <tr><td><code>рсипи</code></td><td><code>есипи</code></td><td><code>эсп</code></td><td><code>спл</code></td><td>—</td></tr>
+        <tr><td><code>рбипи</code></td><td><code>ебипи</code></td><td><code>бипи</code></td><td><code>бпл</code></td><td>—</td></tr>
+        <tr><td><code>рсиай</code></td><td><code>есиай</code></td><td><code>эс</code></td><td><code>сил</code></td><td>—</td></tr>
+        <tr><td><code>рдиай</code></td><td><code>едиай</code></td><td><code>ди</code></td><td><code>дил</code></td><td>—</td></tr>
+        <tr><td><code>р8</code>…<code>р15</code></td><td><code>р8д</code>…<code>р15д</code></td><td><code>р8в</code>…<code>р15в</code></td><td><code>р8б</code>…<code>р15б</code></td><td>—</td></tr>
+    </table>
+
+    <h2 id="директивы">ДИРЕКТИВЫ АССЕМБЛЕРА</h2>
+    <table>
+        <tr><th>Директива</th><th>Описание</th><th>Пример</th></tr>
+        <tr><td><code>.текст</code></td><td>Переключение в секцию кода</td><td><code>.текст</code></td></tr>
+        <tr><td><code>.данные</code></td><td>Переключение в секцию данных</td><td><code>.данные</code></td></tr>
+        <tr><td><code>.глобал</code></td><td>Объявление глобальной метки (точки входа)</td><td><code>.глобал _start</code></td></tr>
+        <tr><td><code>.строка</code></td><td>Строка без нулевого терминатора</td><td><code>.строка "Hello"</code></td></tr>
+        <tr><td><code>.строка_нуль</code></td><td>Строка с нулевым терминатором</td><td><code>.строка_нуль "Hello"</code></td></tr>
+        <tr><td><code>.байт</code></td><td>Резервирование байтов</td><td><code>.байт 0x0A, 255, 0b0001</code></td></tr>
+        <tr><td><code>.константа</code></td><td>Определение константы</td><td><code>.константа SIZE = 100</code></td></tr>
+    </table>
+
+    <h2 id="примеры">ПРИМЕРЫ ПРОГРАММ</h2>
+    
+    <h3>Пример 1: "Привет, мир!"</h3>
+    <pre>.глобал _start
+.текст
+
+_start:
+    ; write(1, msg, 13)
+    переместить_имм раикс, 1
+    загрузить_адрес рсиай, msg
+    переместить_имм рдикс, 13
+    вызов_системы
+
+    ; exit(0)
+    переместить_имм раикс, 60
+    переместить_имм рдикс, 0
+    вызов_системы
+
+.данные
+msg: .строка_нуль "Привет, мир!"</pre>
+
+    <h3>Пример 2: Цикл для вычисления суммы</h3>
+    <pre>.глобал _start
+.текст
+
+_start:
+    переместить_имм р8, 0      ; сумма
+    переместить_имм р9, 10     ; счётчик
+
+loop:
+    прибавить р8, р9
+    уменьшить р9
+    сравнить_с р9, 0
+    переход_если_больше loop
+
+    ; exit(сумма в r8)
+    переместить_имм раикс, 60
+    переместить рдикс, р8
+    вызов_системы</pre>
+
+    <h2 id="трансляция">ПРОЦЕСС ТРАНСЛЯЦИИ И ВЫХОДНЫЕ ФАЙЛЫ</h2>
+    <p>Запуск ассемблера:</p>
+    <pre>python3 kvs_build.py программа.квс</pre>
+    
+    <p><strong>В результате создаются файлы:</strong></p>
+    <ul>
+        <li><strong><code>программа.токены</code></strong> — результат лексического анализа</li>
+        <li><strong><code>программа.аст</code></strong> — AST-представление</li>
+        <li><strong><code>программа.проход1</code></strong> — результаты первого прохода (размеры, метки)</li>
+        <li><strong><code>программа.csv</code></strong> — детальный лог с адресами, байтами и командами</li>
+        <li><strong><code>программа.elf</code></strong> — исполняемый ELF-файл</li>
+    </ul>
+
+    <h2 id="ограничения">ОГРАНИЧЕНИЯ</h2>
+    <div class="warning">
+        <ul>
+            <li><strong>Сложная адресация памяти</strong> — в текущей версии поддерживаются только простые формы <code>[регистр]</code>; полная поддержка <code>[база + индекс*масштаб + смещение]</code> в разработке</li>
+            <li><strong>Отсутствие динамической памяти</strong> — нет встроенных malloc/free (можно реализовать через syscall brk)</li>
+            <li><strong>Нет макросов и условной компиляции</strong></li>
+            <li><strong>Нет 32-битного режима</strong> — только 64-битные ELF</li>
+            <li><strong>Экспериментальный статус</strong> — некоторые инструкции могут быть реализованы не полностью</li>
+        </ul>
+    </div>
+
+    <footer>
+        <p>───────────────────────────────────────────────────────────────────────</p>
+        <p>КВС Ассемблер v2.0 | Экспериментальный проект | 2025</p>
+        <p>Только для образовательных целей. Используйте на свой страх и риск.</p>
+        <p style="margin-top: 10px; font-size: 10px; color: #005500;">
+            > Система готова. Введите команду...
+            <span class="cursor"></span>
+        </p>
+    </footer>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const elements = document.querySelectorAll('h1, h2, h3, p, li, td, th, pre, code');
+        elements.forEach((el, index) => {
+            el.style.opacity = '0';
+            el.style.transition = 'opacity 0.5s ease';
+            setTimeout(() => { el.style.opacity = '1'; }, 100 + index * 10);
+        });
+    });
+</script>
+</body>
+</html>
