@@ -6,15 +6,34 @@
 Принимает: исходный .квс файл
 Выдаёт: текстовый файл с токенами (по одному токену на строку)
 Формат вывода: ТИП:ЗНАЧЕНИЕ
+
+Поддерживает сложную адресацию:
+- [ ] - квадратные скобки
+- + - плюс
+- - - минус
+- * - звёздочка (умножение/масштаб)
+- NUMBER - числа (десятичные, шестнадцатеричные, отрицательные)
 """
 
 import sys
+import re
 
 def error_unterminated_string(line_num):
     return f"Незакрытая кавычка в строке на строке {line_num}"
 
+def is_hex_number(s):
+    """Проверяет, является ли строка шестнадцатеричным числом (0x... или 0X...)"""
+    return re.match(r'^0[xX][0-9a-fA-F]+$', s) is not None
+
+def is_dec_number(s):
+    """Проверяет, является ли строка десятичным числом (возможно с минусом)"""
+    if s.startswith('-'):
+        s = s[1:]
+    return s.isdigit()
+
 def tokenize_line(line, line_num):
     """Разбирает строку в токены"""
+    # Удаляем комментарии
     semi = line.find(';')
     if semi != -1:
         line = line[:semi]
@@ -25,18 +44,21 @@ def tokenize_line(line, line_num):
     tokens = []
     i = 0
     n = len(line)
+    
     while i < n:
         ch = line[i]
+        
+        # Пропускаем пробелы
         if ch.isspace():
             i += 1
             continue
         
+        # Строковые литералы
         if ch == '"':
             i += 1
             s = ''
             while i < n and line[i] != '"':
                 if line[i] == '\\' and i + 1 < n:
-                    # Оставляем escape-последовательности как есть
                     s += '\\' + line[i + 1]
                     i += 2
                 else:
@@ -48,6 +70,7 @@ def tokenize_line(line, line_num):
             tokens.append(('STRING', s))
             continue
         
+        # Одиночные символы-разделители
         if ch == ',':
             tokens.append(('COMMA', ','))
             i += 1
@@ -58,12 +81,53 @@ def tokenize_line(line, line_num):
             i += 1
             continue
         
+        # НОВЫЕ ТОКЕНЫ ДЛЯ СЛОЖНОЙ АДРЕСАЦИИ
+        if ch == '[':
+            tokens.append(('LBRACKET', '['))
+            i += 1
+            continue
+        
+        if ch == ']':
+            tokens.append(('RBRACKET', ']'))
+            i += 1
+            continue
+        
+        if ch == '+':
+            tokens.append(('PLUS', '+'))
+            i += 1
+            continue
+        
+        if ch == '-':
+            # Проверяем, не является ли это началом отрицательного числа
+            # Смотрим следующий символ
+            if i + 1 < n and (line[i + 1].isdigit() or line[i + 1] == '0'):
+                # Возможно отрицательное число, дадим разобраться дальше
+                # Но для простоты сохраняем как MINUS, а число будет отдельным токеном
+                pass
+            tokens.append(('MINUS', '-'))
+            i += 1
+            continue
+        
+        if ch == '*':
+            tokens.append(('STAR', '*'))
+            i += 1
+            continue
+        
+        # Слова, числа, метки
         j = i
-        while j < n and not (line[j].isspace() or line[j] in ',:;'):
+        while j < n and not (line[j].isspace() or line[j] in ',:;[]+*-'):
             j += 1
         word = line[i:j]
+        
         if word:
-            tokens.append(('WORD', word))
+            # Определяем тип токена
+            if is_hex_number(word):
+                tokens.append(('NUMBER', word))
+            elif is_dec_number(word):
+                tokens.append(('NUMBER', word))
+            else:
+                tokens.append(('WORD', word))
+        
         i = j
     
     return tokens

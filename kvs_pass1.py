@@ -7,8 +7,9 @@
 """
 
 import sys
+import re
 sys.path.insert(0, '.')
-from kvs_data import PAGE_SIZE, text_vaddr_base, data_vaddr_base, align_up
+from kvs_data import PAGE_SIZE, text_vaddr_base, data_vaddr_base, align_up, INSTRUCTIONS
 
 def unescape_string(s):
     """Преобразует escape-последовательности в реальные символы"""
@@ -37,6 +38,113 @@ def read_ast(input_file):
         for line in f:
             ast_lines.append(line.strip())
     return ast_lines
+
+def parse_memory_operand(operand_str):
+    """
+    Анализирует операнд памяти вида [reg + reg*scale + disp]
+    Возвращает словарь с информацией:
+    - has_base: bool
+    - base_reg: str or None
+    - has_index: bool
+    - index_reg: str or None
+    - scale: int (1,2,4,8)
+    - has_disp: bool
+    - disp_value: int (если есть)
+    - disp_size: 1 или 4
+    """
+    if not operand_str.startswith('[') or not operand_str.endswith(']'):
+        return None
+    
+    content = operand_str[1:-1].strip()
+    if not content:
+        return None
+    
+    result = {
+        'has_base': False,
+        'base_reg': None,
+        'has_index': False,
+        'index_reg': None,
+        'scale': 1,
+        'has_disp': False,
+        'disp_value': 0,
+        'disp_size': 0
+    }
+    
+    # Проверяем, не является ли содержимое просто числом (абсолютный адрес)
+    if content.isdigit() or (content.startswith('0x') and len(content) > 2 and content[2:].replace('0','').replace('1','').replace('2','').replace('3','').replace('4','').replace('5','').replace('6','').replace('7','').replace('8','').replace('9','').replace('a','').replace('b','').replace('c','').replace('d','').replace('e','').replace('f','').replace('A','').replace('B','').replace('C','').replace('D','').replace('E','').replace('F','') == ''):
+        result['has_disp'] = True
+        if content.startswith('0x'):
+            result['disp_value'] = int(content, 16)
+        else:
+            result['disp_value'] = int(content)
+        result['disp_size'] = 4
+        return result
+    
+    # Простой регистр без смещения
+    if content in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
+                   'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']:
+        result['has_base'] = True
+        result['base_reg'] = content
+        return result
+    
+    # Разбираем выражение: регистр [+- регистр[*масштаб] [+- смещение]]
+    parts = re.split(r'([+\-])', content)
+    
+    for part in parts:
+        part = part.strip()
+        if not part or part in '+-':
+            continue
+        
+        if part in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
+                    'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']:
+            if not result['has_base']:
+                result['has_base'] = True
+                result['base_reg'] = part
+            elif not result['has_index']:
+                result['has_index'] = True
+                result['index_reg'] = part
+        elif part.isdigit() or (part.startswith('0x') and len(part) > 2):
+            result['has_disp'] = True
+            if part.startswith('0x'):
+                result['disp_value'] = int(part, 16)
+            else:
+                result['disp_value'] = int(part)
+        elif '*' in part:
+            reg_part, scale_part = part.split('*')
+            reg_part = reg_part.strip()
+            scale_part = scale_part.strip()
+            if reg_part in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
+                            'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']:
+                result['has_index'] = True
+                result['index_reg'] = reg_part
+                result['scale'] = int(scale_part)
+    
+    if result['has_disp']:
+        if -128 <= result['disp_value'] <= 127:
+            result['disp_size'] = 1
+        else:
+            result['disp_size'] = 4
+    
+    return result
+
+def estimate_memory_operand_size(operand_str):
+    """Оценивает размер операнда памяти в байтах (ModR/M + SIB + disp)"""
+    if not operand_str:
+        return 0
+    
+    addr_mode = parse_memory_operand(operand_str)
+    if addr_mode is None:
+        return 0
+    
+    size = 1
+    
+    if addr_mode['has_index']:
+        size += 1
+    
+    if addr_mode['has_disp']:
+        size += addr_mode['disp_size']
+    
+    return size
 
 class Pass1:
     def __init__(self):
@@ -68,11 +176,11 @@ class Pass1:
                 self.position[".data"] += size
             elif directive == '.константа':
                 name = parts[2]
-                value = parts[3]
-                if value.isdigit():
-                    self.symbols[name] = int(value)
-                elif value.startswith('0x'):
-                    self.symbols[name] = int(value, 16)
+                value_str = parts[3]
+                if value_str.isdigit():
+                    self.symbols[name] = int(value_str)
+                elif value_str.startswith('0x'):
+                    self.symbols[name] = int(value_str, 16)
                 else:
                     self.symbols[name] = 0
             elif directive == '.байт':
@@ -90,10 +198,27 @@ class Pass1:
         elif line_type == "INSTR":
             mnemonic = parts[1]
             sec = parts[2]
-            size = self.estimate_size(mnemonic)
+            operands_str = parts[3] if len(parts) > 3 else ""
+            operands = operands_str.split(',') if operands_str else []
+            size = self.estimate_size(mnemonic, operands)
             self.position[sec] += size
     
-    def estimate_size(self, mnemonic):
+    def estimate_size(self, mnemonic, operands):
+        """Динамический расчёт размера инструкции"""
+        
+        # Инструкции с памятью (загрузить, сохранить, загрузить_адрес)
+        if mnemonic in ("загрузить", "сохранить", "загрузить_адрес"):
+            # RIP-relative: REX (1) + opcode (1) + ModR/M (1) + disp32 (4) = 7
+            return 7
+        
+        # Инструкции без операндов
+        if mnemonic in ("вызов_системы", "нет_операции", "вернуться", "остановить", "отладка"):
+            instr = INSTRUCTIONS.get(mnemonic)
+            if instr and "opcode" in instr:
+                return len(instr["opcode"])
+            return 2
+        
+        # Таблица фиксированных размеров
         size_map = {
             "переместить_имм": 10,
             "сравнить_с": 7,
@@ -127,6 +252,40 @@ class Pass1:
             "прибавить": 3,
             "увеличить": 3,
             "уменьшить": 3,
+            "и": 3,
+            "или": 3,
+            "исключающее_или": 3,
+            "инвертировать": 3,
+            "отрицать": 3,
+            "втолкнуть": 2,
+            "вытолкнуть": 2,
+            "втолкнуть_непосредственно": 5,
+            "умножить": 3,
+            "умножить_знаковое": 3,
+            "разделить": 3,
+            "разделить_знаковое": 3,
+            "сдвиг_влево": 4,
+            "сдвиг_вправо": 4,
+            "сдвиг_арифметический_вправо": 4,
+            "вращать_влево": 4,
+            "вращать_вправо": 4,
+            "цикл": 2,
+            "обменять": 4,
+            "прервать": 2,
+            "ввод_байта": 2,
+            "вывод_байта": 2,
+            "установить_перенос": 1,
+            "сбросить_перенос": 1,
+            "установить_направление": 1,
+            "сбросить_направление": 1,
+            "втолкнуть_флаги": 1,
+            "вытолкнуть_флаги": 1,
+            "переместить_байт": 1,
+            "переместить_слово": 1,
+            "сравнить_байты": 1,
+            "сканировать_байт": 1,
+            "идентифицировать_процессор": 2,
+            "прочитать_счётчик": 2,
         }
         return size_map.get(mnemonic, 3)
     

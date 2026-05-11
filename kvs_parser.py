@@ -5,6 +5,9 @@
 Парсер КВС
 Принимает: файл токенов от лексера
 Выдаёт: текстовый файл с AST-структурой
+
+Поддерживает сложную адресацию:
+- [регистр + регистр*масштаб + смещение]
 """
 
 import sys
@@ -51,6 +54,13 @@ class Parser:
             raise ValueError(f"Ожидался {expected_type}, получено {tok}")
         return tok
     
+    def expect_one_of(self, expected_types):
+        """Ожидает один из нескольких типов токенов"""
+        tok = self.peek()
+        if tok is None or tok[0] not in expected_types:
+            raise ValueError(f"Ожидался один из {expected_types}, получено {tok}")
+        return self.next_token()
+    
     def parse_line(self):
         tok = self.peek()
         if tok is None:
@@ -63,6 +73,7 @@ class Parser:
                 return False
         
         if tok[0] == 'WORD':
+            # Проверяем, есть ли после слова двоеточие (метка)
             if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1][0] == 'COLON':
                 label_name = self.next_token()[1]
                 self.next_token()  # COLON
@@ -107,10 +118,12 @@ class Parser:
             self.parsed_lines.append(f"DIRECTIVE:{word}:{self.current_section}:{string_tok[1]}")
         elif word == '.константа':
             name = self.expect('WORD')[1]
+            # Пропускаем '=', если есть
             eq_tok = self.peek()
             if eq_tok and eq_tok[0] == 'WORD' and eq_tok[1] == '=':
                 self.next_token()
-            value_tok = self.expect('WORD')
+            # Значение может быть WORD или NUMBER
+            value_tok = self.expect_one_of(['WORD', 'NUMBER'])
             self.parsed_lines.append(f"DIRECTIVE:{word}:{name}:{value_tok[1]}")
         elif word == '.байт':
             bytes_list = []
@@ -122,10 +135,70 @@ class Parser:
                     else:
                         break
                 else:
-                    bytes_list.append(self.next_token()[1])
+                    # Может быть WORD (метка) или NUMBER (число)
+                    val_tok = self.expect_one_of(['WORD', 'NUMBER', 'STRING'])
+                    bytes_list.append(val_tok[1])
             self.parsed_lines.append(f"DIRECTIVE:{word}:{self.current_section}:" + ",".join(bytes_list))
         else:
             raise ValueError(f"Неизвестная директива: {word}")
+    
+    def parse_operand(self):
+        """
+        Разбирает один операнд.
+        Возвращает строковое представление операнда.
+        Поддерживает:
+        - регистры
+        - числа
+        - метки
+        - строки
+        - адресацию в квадратных скобках
+        """
+        tok = self.peek()
+        if tok is None:
+            return None
+        
+        if tok[0] == 'LBRACKET':
+            return self.parse_memory_operand()
+        elif tok[0] == 'NUMBER':
+            return self.next_token()[1]
+        elif tok[0] == 'STRING':
+            return self.next_token()[1]
+        elif tok[0] == 'WORD':
+            return self.next_token()[1]
+        else:
+            raise ValueError(f"Неожиданный токен в операнде: {tok}")
+    
+    def parse_memory_operand(self):
+        """
+        Разбирает операнд памяти вида:
+        [регистр]
+        [число]
+        [регистр + смещение]
+        [регистр + регистр*масштаб]
+        [регистр + регистр*масштаб + смещение]
+        """
+        self.expect('LBRACKET')
+        
+        parts = []
+        
+        # Разбираем содержимое до закрывающей скобки
+        while True:
+            tok = self.peek()
+            if tok is None:
+                raise ValueError("Незакрытая квадратная скобка")
+            
+            if tok[0] == 'RBRACKET':
+                self.next_token()
+                break
+            
+            if tok[0] in ('WORD', 'NUMBER', 'PLUS', 'MINUS', 'STAR'):
+                parts.append(self.next_token()[1])
+            else:
+                raise ValueError(f"Неожиданный токен в адресации: {tok}")
+        
+        # Собираем выражение
+        expr = ' '.join(parts)
+        return f"[{expr}]"
     
     def parse_instruction(self, mnemonic):
         if mnemonic not in INSTRUCTIONS:
@@ -139,7 +212,7 @@ class Parser:
             if tok[0] == 'COMMA':
                 self.next_token()
                 continue
-            operands.append(self.next_token()[1])
+            operands.append(self.parse_operand())
         
         self.parsed_lines.append(f"INSTR:{mnemonic}:{self.current_section}:" + ",".join(operands))
     
