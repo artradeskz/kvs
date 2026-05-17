@@ -7,9 +7,8 @@
 """
 
 import sys
-import re
 sys.path.insert(0, '.')
-from kvs_data import PAGE_SIZE, text_vaddr_base, data_vaddr_base, align_up, INSTRUCTIONS
+from kvs_data import PAGE_SIZE, text_vaddr_base, align_up, INSTRUCTIONS, INSTRUCTION_SIZES
 
 def unescape_string(s):
     """Преобразует escape-последовательности в реальные символы"""
@@ -38,6 +37,56 @@ def read_ast(input_file):
         for line in f:
             ast_lines.append(line.strip())
     return ast_lines
+
+def is_hex_number(s):
+    """Проверяет, является ли строка шестнадцатеричным числом"""
+    if len(s) < 3:
+        return False
+    if not (s[0] == '0' and (s[1] == 'x' or s[1] == 'X')):
+        return False
+    for ch in s[2:]:
+        if not (('0' <= ch <= '9') or ('a' <= ch <= 'f') or ('A' <= ch <= 'F')):
+            return False
+    return True
+
+def is_dec_number(s):
+    """Проверяет, является ли строка десятичным числом (возможно с минусом)"""
+    if not s:
+        return False
+    start = 0
+    if s[0] == '-':
+        if len(s) == 1:
+            return False
+        start = 1
+    for ch in s[start:]:
+        if ch < '0' or ch > '9':
+            return False
+    return True
+
+def is_register(s):
+    """Проверяет, является ли строка именем регистра"""
+    return s in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
+                 'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']
+
+def split_by_operators(content):
+    """
+    Разбивает строку по операторам + и - с сохранением операторов.
+    Аналог re.split(r'([+\-])', content)
+    Пример: "раикс + рбикс*4 - 8" -> ["раикс ", "+", " рбикс*4 ", "-", " 8"]
+    """
+    parts = []
+    current = ''
+    for ch in content:
+        if ch == '+' or ch == '-':
+            if current:
+                parts.append(current)
+            parts.append(ch)
+            current = ''
+        else:
+            current += ch
+    if current:
+        parts.append(current)
+    return parts
 
 def parse_memory_operand(operand_str):
     """
@@ -71,9 +120,9 @@ def parse_memory_operand(operand_str):
     }
     
     # Проверяем, не является ли содержимое просто числом (абсолютный адрес)
-    if content.isdigit() or (content.startswith('0x') and len(content) > 2 and content[2:].replace('0','').replace('1','').replace('2','').replace('3','').replace('4','').replace('5','').replace('6','').replace('7','').replace('8','').replace('9','').replace('a','').replace('b','').replace('c','').replace('d','').replace('e','').replace('f','').replace('A','').replace('B','').replace('C','').replace('D','').replace('E','').replace('F','') == ''):
+    if is_dec_number(content) or is_hex_number(content):
         result['has_disp'] = True
-        if content.startswith('0x'):
+        if content.startswith('0x') or content.startswith('0X'):
             result['disp_value'] = int(content, 16)
         else:
             result['disp_value'] = int(content)
@@ -81,43 +130,41 @@ def parse_memory_operand(operand_str):
         return result
     
     # Простой регистр без смещения
-    if content in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
-                   'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']:
+    if is_register(content):
         result['has_base'] = True
         result['base_reg'] = content
         return result
     
     # Разбираем выражение: регистр [+- регистр[*масштаб] [+- смещение]]
-    parts = re.split(r'([+\-])', content)
+    parts = split_by_operators(content)
     
     for part in parts:
         part = part.strip()
-        if not part or part in '+-':
+        if not part or part == '+' or part == '-':
             continue
         
-        if part in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
-                    'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']:
+        if is_register(part):
             if not result['has_base']:
                 result['has_base'] = True
                 result['base_reg'] = part
             elif not result['has_index']:
                 result['has_index'] = True
                 result['index_reg'] = part
-        elif part.isdigit() or (part.startswith('0x') and len(part) > 2):
+        elif is_dec_number(part) or is_hex_number(part):
             result['has_disp'] = True
-            if part.startswith('0x'):
+            if part.startswith('0x') or part.startswith('0X'):
                 result['disp_value'] = int(part, 16)
             else:
                 result['disp_value'] = int(part)
         elif '*' in part:
-            reg_part, scale_part = part.split('*')
-            reg_part = reg_part.strip()
-            scale_part = scale_part.strip()
-            if reg_part in ['раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
-                            'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15']:
-                result['has_index'] = True
-                result['index_reg'] = reg_part
-                result['scale'] = int(scale_part)
+            star_pos = part.find('*')
+            if star_pos != -1:
+                reg_part = part[:star_pos].strip()
+                scale_part = part[star_pos + 1:].strip()
+                if is_register(reg_part):
+                    result['has_index'] = True
+                    result['index_reg'] = reg_part
+                    result['scale'] = int(scale_part)
     
     if result['has_disp']:
         if -128 <= result['disp_value'] <= 127:
@@ -179,16 +226,20 @@ class Pass1:
             elif directive == '.константа':
                 name = parts[2]
                 value_str = parts[3]
-                if value_str.isdigit():
+                if is_dec_number(value_str):
                     self.symbols[name] = int(value_str)
-                elif value_str.startswith('0x'):
+                elif is_hex_number(value_str):
                     self.symbols[name] = int(value_str, 16)
                 else:
                     self.symbols[name] = 0
             elif directive == '.байт':
                 sec = parts[2]
                 if len(parts) > 3 and parts[3]:
-                    num_bytes = len(parts[3].split(','))
+                    # Считаем количество значений, разделённых запятыми
+                    num_bytes = 1
+                    for ch in parts[3]:
+                        if ch == ',':
+                            num_bytes += 1
                     self.position[sec] += num_bytes
 
             # Директивы резервирования в .бнд
@@ -218,7 +269,18 @@ class Pass1:
             mnemonic = parts[1]
             sec = parts[2]
             operands_str = parts[3] if len(parts) > 3 else ""
-            operands = operands_str.split(',') if operands_str else []
+            operands = []
+            if operands_str:
+                # Разбиваем по запятым
+                current = ''
+                for ch in operands_str:
+                    if ch == ',':
+                        operands.append(current)
+                        current = ''
+                    else:
+                        current += ch
+                if current:
+                    operands.append(current)
             size = self.estimate_size(mnemonic, operands)
             self.position[sec] += size
     
@@ -230,83 +292,15 @@ class Pass1:
             # RIP-relative: REX (1) + opcode (1) + ModR/M (1) + disp32 (4) = 7
             return 7
         
-        # Инструкции без операндов
+        # Инструкции без операндов — размер из INSTRUCTIONS
         if mnemonic in ("вызов_системы", "нет_операции", "вернуться", "остановить", "отладка"):
             instr = INSTRUCTIONS.get(mnemonic)
             if instr and "opcode" in instr:
                 return len(instr["opcode"])
             return 2
         
-        # Таблица фиксированных размеров
-        size_map = {
-            "переместить_имм": 10,
-            "сравнить_с": 7,
-            "переход": 5,
-            "переход_если_равно": 6,
-            "переход_если_неравно": 6,
-            "переход_если_ноль": 6,
-            "переход_если_не_ноль": 6,
-            "переход_если_меньше": 6,
-            "переход_если_больше": 6,
-            "переход_если_меньше_или_равно": 6,
-            "переход_если_больше_или_равно": 6,
-            "переход_если_перенос": 6,
-            "переход_если_нет_переноса": 6,
-            "вызов_системы": 2,
-            "нет_операции": 1,
-            "короткий_переход": 2,
-            "короткий_переход_если_равно": 2,
-            "короткий_переход_если_неравно": 2,
-            "короткий_переход_если_меньше": 2,
-            "короткий_переход_если_больше": 2,
-            "короткий_переход_если_меньше_или_равно": 2,
-            "короткий_переход_если_больше_или_равно": 2,
-            "короткий_переход_если_перенос": 2,
-            "короткий_переход_если_нет_переноса": 2,
-            "короткий_переход_если_ноль": 2,
-            "короткий_переход_если_не_ноль": 2,
-            "сравнить": 3,
-            "проверить": 3,
-            "вычесть": 3,
-            "прибавить": 3,
-            "увеличить": 3,
-            "уменьшить": 3,
-            "и": 3,
-            "или": 3,
-            "исключающее_или": 3,
-            "инвертировать": 3,
-            "отрицать": 3,
-            "втолкнуть": 2,
-            "вытолкнуть": 2,
-            "втолкнуть_непосредственно": 5,
-            "умножить": 3,
-            "умножить_знаковое": 3,
-            "разделить": 3,
-            "разделить_знаковое": 3,
-            "сдвиг_влево": 4,
-            "сдвиг_вправо": 4,
-            "сдвиг_арифметический_вправо": 4,
-            "вращать_влево": 4,
-            "вращать_вправо": 4,
-            "цикл": 2,
-            "обменять": 4,
-            "прервать": 2,
-            "ввод_байта": 2,
-            "вывод_байта": 2,
-            "установить_перенос": 1,
-            "сбросить_перенос": 1,
-            "установить_направление": 1,
-            "сбросить_направление": 1,
-            "втолкнуть_флаги": 1,
-            "вытолкнуть_флаги": 1,
-            "переместить_байт": 1,
-            "переместить_слово": 1,
-            "сравнить_байты": 1,
-            "сканировать_байт": 1,
-            "идентифицировать_процессор": 2,
-            "прочитать_счётчик": 2,
-        }
-        return size_map.get(mnemonic, 3)
+        # Фиксированные размеры из общей таблицы
+        return INSTRUCTION_SIZES.get(mnemonic, 3)
     
     def calculate_layout(self):
         text_size = self.position[".text"]

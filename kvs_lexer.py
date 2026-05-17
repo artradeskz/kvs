@@ -16,25 +16,43 @@
 """
 
 import sys
-import re
 
 def error_unterminated_string(line_num):
     return f"Незакрытая кавычка в строке на строке {line_num}"
 
 def is_hex_number(s):
     """Проверяет, является ли строка шестнадцатеричным числом (0x... или 0X...)"""
-    return re.match(r'^0[xX][0-9a-fA-F]+$', s) is not None
+    if len(s) < 3:
+        return False
+    if not (s[0] == '0' and (s[1] == 'x' or s[1] == 'X')):
+        return False
+    for ch in s[2:]:
+        if not (('0' <= ch <= '9') or ('a' <= ch <= 'f') or ('A' <= ch <= 'F')):
+            return False
+    return True
 
 def is_dec_number(s):
     """Проверяет, является ли строка десятичным числом (возможно с минусом)"""
-    if s.startswith('-'):
-        s = s[1:]
-    return s.isdigit()
+    if not s:
+        return False
+    start = 0
+    if s[0] == '-':
+        if len(s) == 1:
+            return False
+        start = 1
+    for ch in s[start:]:
+        if ch < '0' or ch > '9':
+            return False
+    return True
 
 def tokenize_line(line, line_num):
     """Разбирает строку в токены"""
     # Удаляем комментарии
-    semi = line.find(';')
+    semi = -1
+    for idx in range(len(line)):
+        if line[idx] == ';':
+            semi = idx
+            break
     if semi != -1:
         line = line[:semi]
     line = line.rstrip()
@@ -49,7 +67,7 @@ def tokenize_line(line, line_num):
         ch = line[i]
         
         # Пропускаем пробелы
-        if ch.isspace():
+        if ch == ' ' or ch == '\t':
             i += 1
             continue
         
@@ -81,7 +99,7 @@ def tokenize_line(line, line_num):
             i += 1
             continue
         
-        # НОВЫЕ ТОКЕНЫ ДЛЯ СЛОЖНОЙ АДРЕСАЦИИ
+        # ТОКЕНЫ ДЛЯ СЛОЖНОЙ АДРЕСАЦИИ
         if ch == '[':
             tokens.append(('LBRACKET', '['))
             i += 1
@@ -98,12 +116,6 @@ def tokenize_line(line, line_num):
             continue
         
         if ch == '-':
-            # Проверяем, не является ли это началом отрицательного числа
-            # Смотрим следующий символ
-            if i + 1 < n and (line[i + 1].isdigit() or line[i + 1] == '0'):
-                # Возможно отрицательное число, дадим разобраться дальше
-                # Но для простоты сохраняем как MINUS, а число будет отдельным токеном
-                pass
             tokens.append(('MINUS', '-'))
             i += 1
             continue
@@ -115,7 +127,7 @@ def tokenize_line(line, line_num):
         
         # Слова, числа, метки
         j = i
-        while j < n and not (line[j].isspace() or line[j] in ',:;[]+*-'):
+        while j < n and not (line[j] in ' \t,;:[]+*-'):
             j += 1
         word = line[i:j]
         
