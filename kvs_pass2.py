@@ -65,7 +65,7 @@ def read_pass1(input_file):
             if parts[0] == "PARAM":
                 key = parts[1]
                 value = parts[2]
-                if value.isdigit():
+                if value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
                     value = int(value)
                 data[key] = value
             elif parts[0] == "LABEL":
@@ -182,8 +182,8 @@ class Pass2:
         self.label_sections = label_sections
         self.symbols = symbols
         self.vaddr_text = pass1_data["vaddr_text"]
-        text_size = pass1_data["text_size"]
-        self.vaddr_data = align_up(self.vaddr_text + text_size, PAGE_SIZE)
+        self.vaddr_data = pass1_data.get("vaddr_data", align_up(self.vaddr_text + pass1_data["text_size"], PAGE_SIZE))
+        self.vaddr_bnd = pass1_data.get("vaddr_bnd", self.vaddr_data + PAGE_SIZE)
         self.position = {".text": 0, ".data": 0}
         self.current_section = ".text"
         self.csv_lines = []
@@ -211,7 +211,14 @@ class Pass2:
                 op_str = operands[1]
                 if op_str in self.labels:
                     sec = self.label_sections[op_str]
-                    addr = self.labels[op_str] + (self.vaddr_text if sec == ".text" else self.vaddr_data)
+                    if sec == ".text":
+                        addr = self.labels[op_str] + self.vaddr_text
+                    elif sec == ".data":
+                        addr = self.labels[op_str] + self.vaddr_data
+                    elif sec == ".бнд":
+                        addr = self.labels[op_str] + self.vaddr_bnd
+                    else:
+                        addr = self.labels[op_str] + self.vaddr_text
                     return hex(addr)
                 elif op_str in self.symbols:
                     return hex(self.symbols[op_str])
@@ -291,7 +298,8 @@ class Pass2:
             
             current_pos = self.position[sec]
             code = encode_instruction(mnemonic, operands, self.labels, self.label_sections,
-                                     self.symbols, self.vaddr_text, self.vaddr_data, current_pos)
+                                     self.symbols, self.vaddr_text, self.vaddr_data, current_pos,
+                                     self.vaddr_bnd)
             
             target_addr = self.get_target_addr(mnemonic, operands)
             

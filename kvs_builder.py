@@ -125,10 +125,10 @@ def create_elf(text_bytes, data_bytes, pass1_data, labels, output_file):
     ph1 = phdr(1, 5, offset_text, vaddr_text, len(text_bytes), align_up(len(text_bytes), PAGE_SIZE))
     
     if bnd_size > 0:
-        # Сегмент данных включает .data + .bss
-        # p_filesz — только данные в файле, p_memsz — данные + BSS в памяти
         data_segment_filesz = len(data_bytes)
-        data_segment_memsz = align_up(len(data_bytes) + bnd_size, PAGE_SIZE)
+        # memsz должно покрывать от vaddr_data до конца .bss
+        bss_end = vaddr_bnd + bnd_size
+        data_segment_memsz = align_up(bss_end - vaddr_data, PAGE_SIZE)
         ph2 = phdr(1, 6, offset_data, vaddr_data, data_segment_filesz, data_segment_memsz)
     else:
         ph2 = phdr(1, 6, offset_data, vaddr_data, len(data_bytes), align_up(len(data_bytes), PAGE_SIZE))

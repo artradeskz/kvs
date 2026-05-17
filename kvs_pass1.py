@@ -316,8 +316,8 @@ class Pass1:
         offset_data = align_up(offset_text + text_size, PAGE_SIZE)
         vaddr_text = text_vaddr_base
         vaddr_data = align_up(vaddr_text + text_size, PAGE_SIZE)
-        #vaddr_bnd = align_up(vaddr_data + data_size, PAGE_SIZE)
-        vaddr_bnd = align_up(vaddr_data + max(data_size, 1), PAGE_SIZE)
+        # .бнд всегда на следующей странице после .data
+        vaddr_bnd = vaddr_data + PAGE_SIZE
         
         comment_size = len("Сборщик КВС".encode('utf-8')) + 1
         offset_comment = align_up(offset_data + data_size, 1)
@@ -370,4 +370,21 @@ if __name__ == "__main__":
     
     layout = pass1.calculate_layout()
     write_pass1(layout, pass1.labels, pass1.label_sections, pass1.symbols, sys.argv[2])
-    print(f"Проход 1: text_size={layout['text_size']}, data_size={layout['data_size']}, bnd_size={layout['bnd_size']}")
+    
+    print(f"Проход 1:")
+    print(f"  .text: размер={layout['text_size']} байт, смещение_в_файле=0x{layout['offset_text']:x}, виртуальный_адрес=0x{layout['vaddr_text']:x}")
+    print(f"  .data: размер={layout['data_size']} байт, смещение_в_файле=0x{layout['offset_data']:x}, виртуальный_адрес=0x{layout['vaddr_data']:x}")
+    print(f"  .бнд:  размер={layout['bnd_size']} байт, виртуальный_адрес=0x{layout['vaddr_bnd']:x}")
+    print(f"  entry_point: {layout['entry_point']}")
+    print(f"  метки:")
+    for label, pos in pass1.labels.items():
+        sec = pass1.label_sections.get(label, ".text")
+        if sec == ".text":
+            addr = layout['vaddr_text'] + pos
+        elif sec == ".data":
+            addr = layout['vaddr_data'] + pos
+        elif sec == ".бнд":
+            addr = layout['vaddr_bnd'] + pos
+        else:
+            addr = pos
+        print(f"    {label}: секция={sec}, смещение={pos}, адрес=0x{addr:x}")

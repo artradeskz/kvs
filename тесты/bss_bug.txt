@@ -89,3 +89,48 @@ _start:
 ## Как проверить
 
 Если закомментировать Тест 3 (строки с `рсикс` и `неиниц_бнд`), код возврата станет `66` — баг исчезает, потому что `0x402000` не перезаписывается.
+
+
+
+`vaddr_data` считается в **двух** местах:
+
+### 1. `kvs_pass1.py` — метод `calculate_layout`
+
+```python
+vaddr_text = text_vaddr_base                        # 0x401000
+vaddr_data = align_up(vaddr_text + text_size, PAGE_SIZE)  # 0x402000
+vaddr_bnd = align_up(vaddr_data + data_size, PAGE_SIZE)   # 0x402000 или 0x403000
+```
+
+Эти значения записываются в pass1-файл как `PARAM:vaddr_text:...`, `PARAM:vaddr_data:...`, `PARAM:vaddr_bnd:...`.
+
+### 2. `kvs_pass2.py` — конструктор `Pass2.__init__`
+
+```python
+self.vaddr_text = pass1_data["vaddr_text"]          # читает из pass1
+self.vaddr_data = align_up(self.vaddr_text + text_size, PAGE_SIZE)  # вычисляет заново
+```
+
+**Pass2 не читает `vaddr_data` из pass1, а вычисляет сам.** А `vaddr_bnd` не читает и не вычисляет вообще.
+
+### 3. `kvs_builder.py` — функция `create_elf`
+
+```python
+vaddr_data = align_up(vaddr_text + text_size, PAGE_SIZE)  # вычисляет заново
+vaddr_bnd = pass1_data.get("vaddr_bnd", ...)              # читает из pass1
+```
+
+**Builder читает `vaddr_bnd` из pass1**, но энкодер (pass2) его не получает.
+
+---
+
+## Корень бага
+
+| Модуль | `vaddr_data` | `vaddr_bnd` |
+|--------|:-----------:|:----------:|
+| pass1 | вычисляет ✅ | вычисляет ✅ |
+| pass2 | вычисляет ✅ | **не читает** ❌ |
+| builder | вычисляет ✅ | читает из pass1 ✅ |
+| encoder (mutsize) | получает от pass2 ✅ | **не получает** ❌ |
+
+Pass2 не передаёт `vaddr_bnd` в энкодер, поэтому `parse_operand` получает `vaddr_bnd=None` и подставляет `vaddr_data` для меток `.бнд`.

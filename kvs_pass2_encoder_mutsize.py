@@ -55,10 +55,7 @@ def parse_operand(operand, labels, label_sections, symbols, vaddr_text, vaddr_da
         elif section == '.data':
             return labels[operand] + vaddr_data
         elif section == '.бнд':
-            if vaddr_bnd is not None:
-                return labels[operand] + vaddr_bnd
-            else:
-                return labels[operand] + vaddr_data
+            return labels[operand] + vaddr_bnd
         else:
             return labels[operand] + vaddr_text
     if operand in symbols:
@@ -111,7 +108,7 @@ def parse_memory_operand(operand_str, labels, label_sections, vaddr_text, vaddr_
                     elif section == '.data':
                         base = vaddr_data
                     elif section == '.бнд':
-                        base = vaddr_bnd if vaddr_bnd is not None else vaddr_data
+                        base = vaddr_bnd
                     else:
                         base = vaddr_text
                     addr = labels[value] + base
@@ -140,7 +137,7 @@ def parse_memory_operand(operand_str, labels, label_sections, vaddr_text, vaddr_
         elif section == '.data':
             base = vaddr_data
         elif section == '.бнд':
-            base = vaddr_bnd if vaddr_bnd is not None else vaddr_data
+            base = vaddr_bnd
         else:
             base = vaddr_text
         addr = labels[content] + base
