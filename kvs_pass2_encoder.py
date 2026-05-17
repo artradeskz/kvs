@@ -11,13 +11,13 @@ import sys
 from kvs_data import INSTRUCTIONS, REGISTERS, get_reg_info
 
 
-def parse_operand(operand, labels, label_sections, symbols, vaddr_text, vaddr_data):
+def parse_operand(operand, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     Вычисляет значение операнда.
     Поддерживает:
     - десятичные числа (123)
     - шестнадцатеричные (0x7B)
-    - метки (имя_метки)
+    - метки (имя_метки) — из .text, .data или .бнд
     - константы (из .константа)
     """
     if operand.isdigit():
@@ -29,20 +29,29 @@ def parse_operand(operand, labels, label_sections, symbols, vaddr_text, vaddr_da
             pass
     if operand in labels:
         section = label_sections.get(operand, '.text')
-        base = vaddr_text if section == '.text' else vaddr_data
-        return labels[operand] + base
+        if section == '.text':
+            return labels[operand] + vaddr_text
+        elif section == '.data':
+            return labels[operand] + vaddr_data
+        elif section == '.бнд':
+            if vaddr_bnd is not None:
+                return labels[operand] + vaddr_bnd
+            else:
+                return labels[operand] + vaddr_data
+        else:
+            return labels[operand] + vaddr_text
     if operand in symbols:
         return symbols[operand]
     raise ValueError("Неизвестный операнд: " + operand)
 
 
-def parse_memory_operand(operand_str, labels, label_sections, vaddr_text, vaddr_data):
+def parse_memory_operand(operand_str, labels, label_sections, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     Разбирает операнд памяти.
     Возвращает словарь с информацией или None.
     Поддерживает:
     - [число] — абсолютный адрес
-    - [метка] — адрес метки (из .data или .text)
+    - [метка] — адрес метки (из .data, .text или .бнд)
     - [регистр] — косвенная адресация (TODO)
     """
     if not operand_str.startswith('[') or not operand_str.endswith(']'):
@@ -69,7 +78,14 @@ def parse_memory_operand(operand_str, labels, label_sections, vaddr_text, vaddr_
     # Проверяем, является ли содержимое меткой
     if content in labels:
         section = label_sections.get(content, '.data')
-        base = vaddr_text if section == '.text' else vaddr_data
+        if section == '.text':
+            base = vaddr_text
+        elif section == '.data':
+            base = vaddr_data
+        elif section == '.бнд':
+            base = vaddr_bnd if vaddr_bnd is not None else vaddr_data
+        else:
+            base = vaddr_text
         addr = labels[content] + base
         return {
             'type': 'absolute',
@@ -145,7 +161,7 @@ def encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text):
     return code
 
 
-def encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     MOV reg, mem - загрузить из памяти в регистр
     Формат: загрузить <регистр>, [<адрес>]
@@ -154,7 +170,7 @@ def encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, va
     mem_operand = operands[1]
     
     # Пытаемся разобрать операнд памяти
-    mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data)
+    mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data, vaddr_bnd)
     if mem_info and mem_info['type'] == 'absolute':
         return encode_mov_reg_mem_absolute(reg_info, mem_info, current_pos, vaddr_text)
     
@@ -163,7 +179,7 @@ def encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, va
     return b'\x90' * 3
 
 
-def encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     MOV mem, reg - сохранить из регистра в память
     Формат: сохранить [<адрес>], <регистр>
@@ -172,7 +188,7 @@ def encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, va
     reg_info = get_reg_info(operands[1])
     
     # Пытаемся разобрать операнд памяти
-    mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data)
+    mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data, vaddr_bnd)
     if mem_info and mem_info['type'] == 'absolute':
         return encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text)
     
@@ -181,7 +197,7 @@ def encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, va
     return b'\x90' * 3
 
 
-def encode_lea_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_lea_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     LEA reg, mem - загрузить эффективный адрес
     Формат: загрузить_адрес <регистр>, [<адрес>]
@@ -190,7 +206,7 @@ def encode_lea_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_
     mem_operand = operands[1]
     
     # Пытаемся разобрать операнд памяти
-    mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data)
+    mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data, vaddr_bnd)
     if mem_info and mem_info['type'] == 'absolute':
         target_addr = mem_info['address']
         rip_at_end = vaddr_text + current_pos + 7
@@ -217,7 +233,7 @@ def encode_lea_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_
 
 # ========== 1. Инструкции перемещения данных (MOV, LEA, MOVZX, MOVSX) ==========
 
-def encode_mov_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data):
+def encode_mov_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     MOV reg, imm - переместить непосредственное значение в регистр
     Формат: переместить_имм <регистр>, <значение|метка|константа>
@@ -226,7 +242,7 @@ def encode_mov_reg_imm(operands, labels, label_sections, symbols, vaddr_text, va
     reg_info = get_reg_info(operands[0])
     reg = reg_info["index"]
     size = reg_info["size"]
-    imm = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    imm = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
 
     if size == 64:
         if 0 <= reg <= 7:
@@ -335,7 +351,7 @@ def encode_mov_reg8_imm8(operands):
     return code
 
 
-def encode_movzx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data):
+def encode_movzx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     MOVZX reg, mem8 - переместить с расширением нулями
     Формат: переместить_с_нулями <регистр>, <адрес_байта>
@@ -344,7 +360,7 @@ def encode_movzx(operands, labels, label_sections, symbols, vaddr_text, vaddr_da
     instr = INSTRUCTIONS["переместить_с_нулями"]
     reg_info = get_reg_info(operands[0])
     reg = reg_info["index"]
-    addr = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    addr = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     
     rex = 0x48 if reg_info["size"] == 64 else 0x40
     if reg >= 8:
@@ -357,7 +373,7 @@ def encode_movzx(operands, labels, label_sections, symbols, vaddr_text, vaddr_da
     return code
 
 
-def encode_movsx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data):
+def encode_movsx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     MOVSX reg, mem8 - переместить с расширением знака
     Формат: переместить_со_знаком <регистр>, <адрес_байта>
@@ -366,7 +382,7 @@ def encode_movsx(operands, labels, label_sections, symbols, vaddr_text, vaddr_da
     instr = INSTRUCTIONS["переместить_со_знаком"]
     reg_info = get_reg_info(operands[0])
     reg = reg_info["index"]
-    addr = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    addr = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     
     rex = 0x48 if reg_info["size"] == 64 else 0x40
     if reg >= 8:
@@ -381,7 +397,7 @@ def encode_movsx(operands, labels, label_sections, symbols, vaddr_text, vaddr_da
 
 # ========== 2. Инструкции сравнения (CMP, TEST) ==========
 
-def encode_cmp_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data):
+def encode_cmp_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     CMP reg, imm - сравнить регистр с непосредственным значением
     Формат: сравнить_с <регистр>, <значение|метка|константа>
@@ -390,7 +406,7 @@ def encode_cmp_reg_imm(operands, labels, label_sections, symbols, vaddr_text, va
     reg_info = get_reg_info(operands[0])
     reg = reg_info["index"]
     size = reg_info["size"]
-    imm = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    imm = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
 
     if size == 64:
         rex = 0x48
@@ -493,7 +509,7 @@ def encode_cmp_reg_reg(mnemonic, operands):
 
 # ========== 3. Арифметические инструкции (ADD, SUB, MUL, DIV) ==========
 
-def encode_add_sub_reg_imm(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data):
+def encode_add_sub_reg_imm(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd=None):
     """
     ADD/SUB reg, imm - прибавить/вычесть непосредственное значение
     Формат: прибавить_непосредственно / вычесть_непосредственно <регистр>, <значение>
@@ -502,7 +518,7 @@ def encode_add_sub_reg_imm(mnemonic, operands, labels, label_sections, symbols, 
     reg_info = get_reg_info(operands[0])
     reg = reg_info["index"]
     size = reg_info["size"]
-    imm = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    imm = parse_operand(operands[1], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     
     op_map = {
         "прибавить_непосредственно": 0x81,
@@ -671,26 +687,26 @@ def encode_not_neg(mnemonic, operands):
 
 # ========== 5. Инструкции переходов и вызовов ==========
 
-def encode_jmp_rel32(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_jmp_rel32(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     JMP rel32 - безусловный переход с 32-битным смещением
     """
     code = bytearray()
     instr = INSTRUCTIONS["переход"]
     code.extend(instr["opcode"])
-    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     offset = target - (vaddr_text + current_pos + 5)
     code.extend(struct.pack('<i', offset))
     return code
 
 
-def encode_jmp_short(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_jmp_short(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     JMP SHORT - короткий безусловный переход с 8-битным смещением
     """
     code = bytearray()
     code.append(0xEB)
-    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     offset = target - (vaddr_text + current_pos + 2)
     if not (-128 <= offset <= 127):
         raise ValueError(f"Смещение короткого перехода {offset} вне диапазона [-128..127]")
@@ -698,27 +714,27 @@ def encode_jmp_short(operands, labels, label_sections, symbols, vaddr_text, vadd
     return code
 
 
-def encode_jcc_rel32(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_jcc_rel32(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     Jcc rel32 - условный переход с 32-битным смещением
     """
     code = bytearray()
     instr = INSTRUCTIONS[mnemonic]
     code.extend(instr["opcode"])
-    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     offset = target - (vaddr_text + current_pos + 6)
     code.extend(struct.pack('<i', offset))
     return code
 
 
-def encode_jcc_short(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_jcc_short(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     Jcc SHORT - короткий условный переход с 8-битным смещением
     """
     code = bytearray()
     instr = INSTRUCTIONS[mnemonic]
     code.extend(instr["opcode"])
-    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     offset = target - (vaddr_text + current_pos + 2)
     if not (-128 <= offset <= 127):
         raise ValueError(f"Смещение короткого перехода {offset} вне диапазона [-128..127]")
@@ -726,14 +742,14 @@ def encode_jcc_short(mnemonic, operands, labels, label_sections, symbols, vaddr_
     return code
 
 
-def encode_call(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_call(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     CALL rel32 - вызов процедуры
     """
     code = bytearray()
     instr = INSTRUCTIONS["вызвать"]
     code.extend(instr["opcode"])
-    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     offset = target - (vaddr_text + current_pos + 5)
     code.extend(struct.pack('<i', offset))
     return code
@@ -744,14 +760,14 @@ def encode_ret():
     return INSTRUCTIONS["вернуться"]["opcode"]
 
 
-def encode_loop(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_loop(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     LOOP rel8 - инструкция цикла
     """
     code = bytearray()
     instr = INSTRUCTIONS["цикл"]
     code.extend(instr["opcode"])
-    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data)
+    target = parse_operand(operands[0], labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     offset = target - (vaddr_text + current_pos + 2)
     if not (-128 <= offset <= 127):
         raise ValueError(f"Смещение LOOP {offset} вне диапазона [-128..127]")
@@ -1002,7 +1018,7 @@ def encode_xchg(operands):
 
 # ========== ГЛАВНЫЙ ДИСПЕТЧЕР ==========
 
-def encode_instruction(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos):
+def encode_instruction(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """
     Главный диспетчер генерации машинного кода.
     По мнемонике выбирает соответствующую функцию генерации.
@@ -1031,33 +1047,33 @@ def encode_instruction(mnemonic, operands, labels, label_sections, symbols, vadd
     
     # ----- MOV с памятью -----
     elif mnemonic == "загрузить":
-        return encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     elif mnemonic == "сохранить":
-        return encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     elif mnemonic == "загрузить_адрес":
-        return encode_lea_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_lea_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     
     # ----- MOV (разные формы) -----
     elif mnemonic == "переместить_имм":
-        return encode_mov_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data)
+        return encode_mov_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     elif mnemonic == "переместить":
         return encode_mov_reg_reg(operands)
     elif mnemonic == "загрузить_байт":
         return encode_mov_reg8_imm8(operands)
     elif mnemonic == "переместить_с_нулями":
-        return encode_movzx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data)
+        return encode_movzx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     elif mnemonic == "переместить_со_знаком":
-        return encode_movsx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data)
+        return encode_movsx(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     
     # ----- CMP (сравнение) -----
     elif mnemonic == "сравнить_с":
-        return encode_cmp_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data)
+        return encode_cmp_reg_imm(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     elif mnemonic in ("сравнить", "сравнить_байт", "проверить"):
         return encode_cmp_reg_reg(mnemonic, operands)
     
     # ----- ADD/SUB (арифметика) -----
     elif mnemonic in ("прибавить_непосредственно", "вычесть_непосредственно"):
-        return encode_add_sub_reg_imm(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data)
+        return encode_add_sub_reg_imm(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, vaddr_bnd)
     elif mnemonic in ("прибавить", "вычесть", "прибавить_байт", "вычесть_байт"):
         return encode_add_sub_reg_reg(mnemonic, operands)
     
@@ -1079,25 +1095,25 @@ def encode_instruction(mnemonic, operands, labels, label_sections, symbols, vadd
     
     # ----- Переходы -----
     elif mnemonic == "переход":
-        return encode_jmp_rel32(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_jmp_rel32(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     elif mnemonic == "короткий_переход":
-        return encode_jmp_short(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_jmp_short(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     elif mnemonic in ("переход_если_равно", "переход_если_неравно", "переход_если_меньше",
                       "переход_если_больше", "переход_если_меньше_или_равно", "переход_если_больше_или_равно",
                       "переход_если_перенос", "переход_если_нет_переноса", "переход_если_ноль", "переход_если_не_ноль"):
-        return encode_jcc_rel32(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_jcc_rel32(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     elif mnemonic in ("короткий_переход_если_равно", "короткий_переход_если_неравно",
                       "короткий_переход_если_меньше", "короткий_переход_если_больше",
                       "короткий_переход_если_меньше_или_равно", "короткий_переход_если_больше_или_равно",
                       "короткий_переход_если_перенос", "короткий_переход_если_нет_переноса",
                       "короткий_переход_если_ноль", "короткий_переход_если_не_ноль"):
-        return encode_jcc_short(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_jcc_short(mnemonic, operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     
     # ----- CALL/RET/LOOP -----
     elif mnemonic == "вызвать":
-        return encode_call(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_call(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     elif mnemonic == "цикл":
-        return encode_loop(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos)
+        return encode_loop(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd)
     
     # ----- PUSH/POP -----
     elif mnemonic == "втолкнуть":

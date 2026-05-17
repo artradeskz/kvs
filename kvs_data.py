@@ -11,6 +11,16 @@ import struct
 
 # === ГЛОБАЛЬНЫЕ КОНСТАНТЫ ===
 
+# Константы для секции .бнд (аналог .bss)
+SECTION_BND = '.бнд'
+SECTION_BND_ELF = '.bss'  # Имя секции в ELF-файле (стандарт Linux)
+
+# ELF-константы для секции типа SHT_NOBITS
+SHT_NOBITS = 8
+SHF_WRITE = 0x1
+SHF_ALLOC = 0x2
+
+
 # ELF константы
 PAGE_SIZE = 0x1000                     # Размер страницы памяти (4096 байт)
 elf_base_vaddr = 0x400000              # Базовый виртуальный адрес ELF

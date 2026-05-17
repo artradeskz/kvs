@@ -151,7 +151,7 @@ class Pass1:
         self.labels = {}
         self.label_sections = {}
         self.symbols = {}
-        self.position = {".text": 0, ".data": 0}
+        self.position = {".text": 0, ".data": 0, ".бнд": 0}
         self.current_section = ".text"
         self.entry_point = "_start"
         
@@ -165,6 +165,8 @@ class Pass1:
                 self.current_section = ".text"
             elif directive == '.данные':
                 self.current_section = ".data"
+            elif directive == '.бнд':
+                self.current_section = ".бнд"
             elif directive == '.глобал':
                 self.entry_point = parts[2]
             elif directive in ('.строка_нуль', '.строка'):
@@ -188,6 +190,23 @@ class Pass1:
                 if len(parts) > 3 and parts[3]:
                     num_bytes = len(parts[3].split(','))
                     self.position[sec] += num_bytes
+
+            # Директивы резервирования в .бнд
+            elif directive == '.резб':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 1
+
+            elif directive == '.резс':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 2
+
+            elif directive == '.рездс':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 4
+
+            elif directive == '.резкс':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 8
                     
         elif line_type == "LABEL":
             label_name = parts[1]
@@ -292,6 +311,7 @@ class Pass1:
     def calculate_layout(self):
         text_size = self.position[".text"]
         data_size = self.position[".data"]
+        bnd_size = self.position[".бнд"]
         
         elf_header_size = 64
         ph_size = 56
@@ -302,21 +322,29 @@ class Pass1:
         offset_data = align_up(offset_text + text_size, PAGE_SIZE)
         vaddr_text = text_vaddr_base
         vaddr_data = align_up(vaddr_text + text_size, PAGE_SIZE)
+        vaddr_bnd = align_up(vaddr_data + data_size, PAGE_SIZE)
         
         comment_size = len("Сборщик КВС".encode('utf-8')) + 1
         offset_comment = align_up(offset_data + data_size, 1)
         
-        shstrtab_size = len(b"\x00.text\x00.data\x00.comment\x00.shstrtab\x00")
+        # shstrtab теперь включает ".bss"
+        if bnd_size > 0:
+            shstrtab_content = b"\x00.text\x00.data\x00.bss\x00.comment\x00.shstrtab\x00"
+        else:
+            shstrtab_content = b"\x00.text\x00.data\x00.comment\x00.shstrtab\x00"
+        shstrtab_size = len(shstrtab_content)
         shstrtab_offset = align_up(offset_comment + comment_size, 8)
         shdr_offset = align_up(shstrtab_offset + shstrtab_size, 16)
         
         return {
             "text_size": text_size,
             "data_size": data_size,
+            "bnd_size": bnd_size,
             "offset_text": offset_text,
             "offset_data": offset_data,
             "vaddr_text": vaddr_text,
             "vaddr_data": vaddr_data,
+            "vaddr_bnd": vaddr_bnd,
             "offset_comment": offset_comment,
             "comment_size": comment_size,
             "shstrtab_offset": shstrtab_offset,
@@ -347,4 +375,4 @@ if __name__ == "__main__":
     
     layout = pass1.calculate_layout()
     write_pass1(layout, pass1.labels, pass1.label_sections, pass1.symbols, sys.argv[2])
-    print(f"Проход 1: text_size={layout['text_size']}, data_size={layout['data_size']}")
+    print(f"Проход 1: text_size={layout['text_size']}, data_size={layout['data_size']}, bnd_size={layout['bnd_size']}")

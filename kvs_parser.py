@@ -104,19 +104,45 @@ class Parser:
         return True
     
     def parse_directive(self, word):
+        """
+        Разбор директив ассемблера.
+        Вызывает ошибку при некорректном синтаксисе или контексте.
+        """
+        # === Секции ===
         if word == '.текст':
             self.current_section = ".text"
             self.parsed_lines.append(f"DIRECTIVE:{word}")
+
         elif word == '.данные':
             self.current_section = ".data"
             self.parsed_lines.append(f"DIRECTIVE:{word}")
+
+        elif word == '.бнд':
+            self.current_section = ".бнд"
+            self.parsed_lines.append(f"DIRECTIVE:{word}")
+
+        # === Глобальные метки ===
         elif word == '.глобал':
             label = self.expect('WORD')[1]
             self.parsed_lines.append(f"DIRECTIVE:{word}:{label}")
+
+        # === Строковые директивы (запрещены в .бнд) ===
         elif word in ('.строка_нуль', '.строка'):
+            if self.current_section == ".бнд":
+                raise ValueError(
+                    "Ошибка: секция .бнд не поддерживает инициализированные данные "
+                    "(используйте .резб, .резс, .рездс, .резкс)"
+                )
             string_tok = self.expect('STRING')
             self.parsed_lines.append(f"DIRECTIVE:{word}:{self.current_section}:{string_tok[1]}")
+
+        # === Константы (запрещены в .бнд) ===
         elif word == '.константа':
+            if self.current_section == ".бнд":
+                raise ValueError(
+                    "Ошибка: секция .бнд не поддерживает инициализированные данные "
+                    "(используйте .резб, .резс, .рездс, .резкс)"
+                )
             name = self.expect('WORD')[1]
             # Пропускаем '=', если есть
             eq_tok = self.peek()
@@ -125,7 +151,14 @@ class Parser:
             # Значение может быть WORD или NUMBER
             value_tok = self.expect_one_of(['WORD', 'NUMBER'])
             self.parsed_lines.append(f"DIRECTIVE:{word}:{name}:{value_tok[1]}")
+
+        # === Байты (запрещены в .бнд) ===
         elif word == '.байт':
+            if self.current_section == ".бнд":
+                raise ValueError(
+                    "Ошибка: секция .бнд не поддерживает инициализированные данные "
+                    "(используйте .резб, .резс, .рездс, .резкс)"
+                )
             bytes_list = []
             while True:
                 tok = self.peek()
@@ -139,6 +172,23 @@ class Parser:
                     val_tok = self.expect_one_of(['WORD', 'NUMBER', 'STRING'])
                     bytes_list.append(val_tok[1])
             self.parsed_lines.append(f"DIRECTIVE:{word}:{self.current_section}:" + ",".join(bytes_list))
+
+        # === Директивы резервирования (только в .бнд) ===
+        elif word in ('.резб', '.резс', '.рездс', '.резкс'):
+            if self.current_section != ".бнд":
+                raise ValueError(
+                    f"Ошибка: директива {word} допустима только внутри секции .бнд"
+                )
+            count_tok = self.expect('NUMBER')
+            count = int(count_tok[1])
+            if count <= 0:
+                raise ValueError(
+                    f"Ошибка: размер резервирования должен быть положительным целым числом"
+                )
+            self.parsed_lines.append(
+                f"DIRECTIVE:{word}:{self.current_section}:{count}"
+            )
+
         else:
             raise ValueError(f"Неизвестная директива: {word}")
     

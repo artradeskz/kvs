@@ -91,8 +91,11 @@ class Pass2:
         self.symbols = symbols
         self.vaddr_text = pass1_data["vaddr_text"]
         text_size = pass1_data["text_size"]
+        data_size = pass1_data["data_size"]
         self.vaddr_data = align_up(self.vaddr_text + text_size, PAGE_SIZE)
-        self.position = {".text": 0, ".data": 0}
+        self.vaddr_bnd = pass1_data.get("vaddr_bnd", align_up(self.vaddr_data + data_size, PAGE_SIZE))
+        self.bnd_size = pass1_data.get("bnd_size", 0)
+        self.position = {".text": 0, ".data": 0, ".бнд": 0}
         self.current_section = ".text"
         self.csv_lines = []
         self.data_bytes = {".text": bytearray(), ".data": bytearray()}
@@ -119,7 +122,14 @@ class Pass2:
                 op_str = operands[1]
                 if op_str in self.labels:
                     sec = self.label_sections[op_str]
-                    addr = self.labels[op_str] + (self.vaddr_text if sec == ".text" else self.vaddr_data)
+                    if sec == ".text":
+                        addr = self.labels[op_str] + self.vaddr_text
+                    elif sec == ".data":
+                        addr = self.labels[op_str] + self.vaddr_data
+                    elif sec == ".бнд":
+                        addr = self.labels[op_str] + self.vaddr_bnd
+                    else:
+                        addr = self.labels[op_str] + self.vaddr_text
                     return hex(addr)
                 elif op_str in self.symbols:
                     return hex(self.symbols[op_str])
@@ -139,6 +149,8 @@ class Pass2:
                 self.current_section = ".text"
             elif directive == '.данные':
                 self.current_section = ".data"
+            elif directive == '.бнд':
+                self.current_section = ".бнд"
             elif directive in ('.строка_нуль', '.строка'):
                 s = parts[3] if len(parts) > 3 else ""
                 real_s = unescape_string(s)
@@ -180,6 +192,23 @@ class Pass2:
                         self.data_bytes[".data"].append(val & 0xFF)
                     
                     self.position[".data"] += len(byte_values)
+
+            # Директивы резервирования в .бнд — не генерируют байты
+            elif directive == '.резб':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 1
+
+            elif directive == '.резс':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 2
+
+            elif directive == '.рездс':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 4
+
+            elif directive == '.резкс':
+                count = int(parts[3])
+                self.position['.бнд'] += count * 8
                     
         elif line_type == "LABEL":
             label_name = parts[1]
@@ -250,3 +279,5 @@ if __name__ == "__main__":
     print(f"Проход 2: {len(csv_lines)} строк CSV записано в {sys.argv[3]}")
     print(f"  .text: {pass2.position['.text']} байт, виртуальный адрес: 0x{pass2.vaddr_text:x}")
     print(f"  .data: {pass2.position['.data']} байт, виртуальный адрес: 0x{pass2.vaddr_data:x}")
+    if pass2.bnd_size > 0:
+        print(f"  .бнд:  {pass2.bnd_size} байт, виртуальный адрес: 0x{pass2.vaddr_bnd:x}")
