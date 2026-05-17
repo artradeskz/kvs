@@ -8,7 +8,13 @@
 
 import sys
 sys.path.insert(0, '.')
-from kvs_data import PAGE_SIZE, text_vaddr_base, align_up, INSTRUCTIONS, INSTRUCTION_SIZES
+from kvs_data import PAGE_SIZE, text_vaddr_base, align_up, INSTRUCTIONS
+from kvs_data import FIXED_SIZE_INSTRUCTIONS, VARIABLE_SIZE_INSTRUCTIONS
+
+# ========== РЕЖИМ ОЦЕНКИ РАЗМЕРОВ ==========
+# True  — пессимистичный: все неизвестные инструкции = 10 байт (максимум)
+# False — оптимистичный: использовать точный анализ операндов
+PESSIMISTIC_SIZE_ESTIMATE = False
 
 def unescape_string(s):
     """Преобразует escape-последовательности в реальные символы"""
@@ -91,15 +97,7 @@ def split_by_operators(content):
 def parse_memory_operand(operand_str):
     """
     Анализирует операнд памяти вида [reg + reg*scale + disp]
-    Возвращает словарь с информацией:
-    - has_base: bool
-    - base_reg: str or None
-    - has_index: bool
-    - index_reg: str or None
-    - scale: int (1,2,4,8)
-    - has_disp: bool
-    - disp_value: int (если есть)
-    - disp_size: 1 или 4
+    Возвращает словарь с информацией.
     """
     if not operand_str.startswith('[') or not operand_str.endswith(']'):
         return None
@@ -119,7 +117,6 @@ def parse_memory_operand(operand_str):
         'disp_size': 0
     }
     
-    # Проверяем, не является ли содержимое просто числом (абсолютный адрес)
     if is_dec_number(content) or is_hex_number(content):
         result['has_disp'] = True
         if content.startswith('0x') or content.startswith('0X'):
@@ -129,13 +126,11 @@ def parse_memory_operand(operand_str):
         result['disp_size'] = 4
         return result
     
-    # Простой регистр без смещения
     if is_register(content):
         result['has_base'] = True
         result['base_reg'] = content
         return result
     
-    # Разбираем выражение: регистр [+- регистр[*масштаб] [+- смещение]]
     parts = split_by_operators(content)
     
     for part in parts:
@@ -235,26 +230,20 @@ class Pass1:
             elif directive == '.байт':
                 sec = parts[2]
                 if len(parts) > 3 and parts[3]:
-                    # Считаем количество значений, разделённых запятыми
                     num_bytes = 1
                     for ch in parts[3]:
                         if ch == ',':
                             num_bytes += 1
                     self.position[sec] += num_bytes
-
-            # Директивы резервирования в .бнд
             elif directive == '.резб':
                 count = int(parts[3])
                 self.position['.бнд'] += count * 1
-
             elif directive == '.резс':
                 count = int(parts[3])
                 self.position['.бнд'] += count * 2
-
             elif directive == '.рездс':
                 count = int(parts[3])
                 self.position['.бнд'] += count * 4
-
             elif directive == '.резкс':
                 count = int(parts[3])
                 self.position['.бнд'] += count * 8
@@ -271,7 +260,6 @@ class Pass1:
             operands_str = parts[3] if len(parts) > 3 else ""
             operands = []
             if operands_str:
-                # Разбиваем по запятым
                 current = ''
                 for ch in operands_str:
                     if ch == ',':
@@ -287,20 +275,44 @@ class Pass1:
     def estimate_size(self, mnemonic, operands):
         """Динамический расчёт размера инструкции"""
         
-        # Инструкции с памятью (загрузить, сохранить, загрузить_адрес)
+        # Инструкции с фиксированным размером
+        if mnemonic in FIXED_SIZE_INSTRUCTIONS:
+            return FIXED_SIZE_INSTRUCTIONS[mnemonic]
+        
+        # Инструкции с переменным размером — анализируем операнды
         if mnemonic in ("загрузить", "сохранить", "загрузить_адрес"):
-            # RIP-relative: REX (1) + opcode (1) + ModR/M (1) + disp32 (4) = 7
-            return 7
+            for op in operands:
+                if op.startswith('MEM:reg_indirect:'):
+                    return 3  # косвенная: REX + opcode + ModR/M
+            return 7  # абсолютная: REX + opcode + ModR/M + disp32
         
-        # Инструкции без операндов — размер из INSTRUCTIONS
-        if mnemonic in ("вызов_системы", "нет_операции", "вернуться", "остановить", "отладка"):
-            instr = INSTRUCTIONS.get(mnemonic)
-            if instr and "opcode" in instr:
-                return len(instr["opcode"])
-            return 2
+        if mnemonic in ("втолкнуть", "вытолкнуть"):
+            if operands:
+                reg = operands[0]
+                if reg in ('р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15'):
+                    return 2  # нужен REX-префикс
+            return 1  # без REX
         
-        # Фиксированные размеры из общей таблицы
-        return INSTRUCTION_SIZES.get(mnemonic, 3)
+        if mnemonic in ("прибавить_непосредственно", "вычесть_непосредственно", "сравнить_с"):
+            return 7  # пессимистично: REX + opcode + ModR/M + imm32
+        
+        if mnemonic == "переместить_имм":
+            return 10  # пессимистично: mov reg64, imm64
+        
+        if mnemonic in ("переместить_с_нулями", "переместить_со_знаком"):
+            return 8  # REX + 3-байтный opcode + ModR/M + disp32
+        
+        if mnemonic == "загрузить_байт":
+            return 2  # opcode + imm8
+        
+        if mnemonic == "втолкнуть_непосредственно":
+            return 5  # пессимистично: opcode + imm32
+        
+        # Неизвестная инструкция
+        if PESSIMISTIC_SIZE_ESTIMATE:
+            return 10
+        else:
+            return 3
     
     def calculate_layout(self):
         text_size = self.position[".text"]
@@ -316,13 +328,11 @@ class Pass1:
         offset_data = align_up(offset_text + text_size, PAGE_SIZE)
         vaddr_text = text_vaddr_base
         vaddr_data = align_up(vaddr_text + text_size, PAGE_SIZE)
-        # .бнд всегда на следующей странице после .data
         vaddr_bnd = vaddr_data + PAGE_SIZE
         
         comment_size = len("Сборщик КВС".encode('utf-8')) + 1
         offset_comment = align_up(offset_data + data_size, 1)
         
-        # shstrtab теперь включает ".bss"
         if bnd_size > 0:
             shstrtab_content = b"\x00.text\x00.data\x00.bss\x00.comment\x00.shstrtab\x00"
         else:
@@ -371,7 +381,7 @@ if __name__ == "__main__":
     layout = pass1.calculate_layout()
     write_pass1(layout, pass1.labels, pass1.label_sections, pass1.symbols, sys.argv[2])
     
-    print(f"Проход 1:")
+    print(f"Проход 1 (режим: {'пессимистичный' if PESSIMISTIC_SIZE_ESTIMATE else 'оптимистичный'}):")
     print(f"  .text: размер={layout['text_size']} байт, смещение_в_файле=0x{layout['offset_text']:x}, виртуальный_адрес=0x{layout['vaddr_text']:x}")
     print(f"  .data: размер={layout['data_size']} байт, смещение_в_файле=0x{layout['offset_data']:x}, виртуальный_адрес=0x{layout['vaddr_data']:x}")
     print(f"  .бнд:  размер={layout['bnd_size']} байт, виртуальный_адрес=0x{layout['vaddr_bnd']:x}")

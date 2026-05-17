@@ -734,14 +734,26 @@ def encode_add_sub_reg_reg(mnemonic, operands):  # ДУБЛИКАТ
     return code
 
 
-def encode_muldiv(mnemonic):  # ДУБЛИКАТ
+def encode_muldiv(mnemonic, operands):  # ДУБЛИКАТ
     """MUL/IMUL/DIV/IDIV"""
     code = bytearray()
     instr = INSTRUCTIONS[mnemonic]
     subop = instr["subop"]
-    code.append(0x48)
+    
+    # Получаем индекс регистра-операнда
+    if operands:
+        reg_info = get_reg_info(operands[0])
+        reg = reg_info["index"]
+    else:
+        reg = 0  # по умолчанию rax
+    
+    rex = 0x48
+    if reg >= 8:
+        rex |= 0x01  # REX.B
+    
+    code.append(rex)
     code.extend(instr["opcode"])
-    modrm = 0xC0 | (subop << 3) | 0
+    modrm = 0xC0 | (subop << 3) | (reg & 7)
     code.append(modrm)
     return code
 
@@ -1073,7 +1085,7 @@ def encode_instruction(mnemonic, operands, labels, label_sections, symbols, vadd
     
     # ----- MUL/DIV -----
     elif mnemonic in ("умножить", "умножить_знаковое", "разделить", "разделить_знаковое"):
-        return encode_muldiv(mnemonic)
+        return encode_muldiv(mnemonic, operands)
     
     # ----- AND/OR/XOR -----
     elif mnemonic in ("и", "или", "исключающее_или"):

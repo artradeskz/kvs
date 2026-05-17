@@ -32,6 +32,7 @@ if __name__ == "__main__":
         ("kvs_parser.py", [tokens_file, ast_file], "Парсинг"),
         ("kvs_pass1.py", [ast_file, pass1_file], "Первый проход"),
         ("kvs_pass2.py", [ast_file, pass1_file, csv_file], "Второй проход и генерация CSV"),
+        ("kvs_verify.py", [pass1_file, csv_file], "Проверка размеров инструкций"),
         ("kvs_builder.py", [csv_file, pass1_file, elf_file], "Сборка ELF"),
     ]
     
@@ -43,9 +44,13 @@ if __name__ == "__main__":
         if result.returncode != 0:
             print(f"ОШИБКА на этапе '{description}':")
             print(result.stderr)
+            if result.stdout:
+                print(result.stdout)
             sys.exit(1)
         
-        print(result.stdout)
+        # Для верификатора показываем stdout (там детали проверки)
+        if result.stdout:
+            print(result.stdout)
     
     print(f"\n=== Компиляция успешно завершена ===")
     print(f"Исполняемый файл: {elf_file}")

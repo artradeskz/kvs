@@ -17,7 +17,7 @@ def read_csv(input_file, vaddr_text, vaddr_data, text_size, data_size):
     data_bytes = bytearray(data_size)
     
     with open(input_file, 'r', encoding='utf-8') as f:
-        next(f)  # Пропускаем заголовок
+        next(f)
         for line in f:
             line = line.strip()
             if not line:
@@ -34,7 +34,6 @@ def read_csv(input_file, vaddr_text, vaddr_data, text_size, data_size):
             except ValueError:
                 continue
             
-            # Определяем секцию по адресу
             if addr >= vaddr_data:
                 offset = addr - vaddr_data
                 if 0 <= offset < data_size:
@@ -43,6 +42,18 @@ def read_csv(input_file, vaddr_text, vaddr_data, text_size, data_size):
                 offset = addr - vaddr_text
                 if 0 <= offset < text_size:
                     text_bytes[offset] = byte_val
+    
+    # Заменяем хвостовые нули на NOP'ы (0x90)
+    # Находим последний ненулевой байт
+    last_nonzero = -1
+    for i in range(len(text_bytes) - 1, -1, -1):
+        if text_bytes[i] != 0:
+            last_nonzero = i
+            break
+    
+    if last_nonzero >= 0 and last_nonzero < len(text_bytes) - 1:
+        for i in range(last_nonzero + 1, len(text_bytes)):
+            text_bytes[i] = 0x90
     
     return text_bytes, data_bytes
 
