@@ -316,7 +316,8 @@ class Pass1:
         offset_data = align_up(offset_text + text_size, PAGE_SIZE)
         vaddr_text = text_vaddr_base
         vaddr_data = align_up(vaddr_text + text_size, PAGE_SIZE)
-        vaddr_bnd = align_up(vaddr_data + data_size, PAGE_SIZE)
+        #vaddr_bnd = align_up(vaddr_data + data_size, PAGE_SIZE)
+        vaddr_bnd = align_up(vaddr_data + max(data_size, 1), PAGE_SIZE)
         
         comment_size = len("Сборщик КВС".encode('utf-8')) + 1
         offset_comment = align_up(offset_data + data_size, 1)

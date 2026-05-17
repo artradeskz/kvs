@@ -14,6 +14,33 @@ import sys
 sys.path.insert(0, '.')
 from kvs_data import REGISTERS, INSTRUCTIONS
 
+
+def make_memory_operand(addr_type, base_reg=None, displacement=None, label=None):
+    """Создаёт кортеж операнда памяти.
+    Формат: (addr_type, base_reg, displacement, label)
+    """
+    return (addr_type, base_reg, displacement, label)
+
+
+def memory_operand_to_ast_string(mem_op):
+    """Преобразует кортеж памяти в строку AST.
+    Формат: 'MEM:тип:данные'
+    """
+    addr_type = mem_op[0]
+    if addr_type == 'absolute':
+        if mem_op[3] is not None:  # label
+            return f"MEM:absolute:{mem_op[3]}"
+        else:  # displacement
+            return f"MEM:absolute:{mem_op[2]}"
+    elif addr_type == 'register_indirect':
+        return f"MEM:reg_indirect:{mem_op[1]}"
+    elif addr_type == 'complex':
+        # Пока не поддерживается, но зарезервировано
+        return f"MEM:complex:{mem_op[1]}+{mem_op[2]}*{mem_op[3]}+{mem_op[4]}"
+    else:
+        return f"MEM:unknown"
+
+
 def read_tokens(input_file):
     """Читает токены из файла"""
     tokens = []
@@ -29,6 +56,7 @@ def read_tokens(input_file):
             tok_value = line[colon_pos + 1:]
             tokens.append((tok_type, tok_value))
     return tokens
+
 
 class Parser:
     def __init__(self, tokens):
@@ -195,7 +223,8 @@ class Parser:
     def parse_operand(self):
         """
         Разбирает один операнд.
-        Возвращает строковое представление операнда.
+        Возвращает строку (регистр, число, метка, строка, старый формат памяти)
+        или кортеж (новый формат памяти).
         Поддерживает:
         - регистры
         - числа
@@ -208,6 +237,7 @@ class Parser:
             return None
         
         if tok[0] == 'LBRACKET':
+            self.next_token()  # съедаем '['
             return self.parse_memory_operand()
         elif tok[0] == 'NUMBER':
             return self.next_token()[1]
@@ -220,15 +250,19 @@ class Parser:
     
     def parse_memory_operand(self):
         """
-        Разбирает операнд памяти вида:
-        [регистр]
-        [число]
-        [регистр + смещение]
-        [регистр + регистр*масштаб]
-        [регистр + регистр*масштаб + смещение]
-        """
-        self.expect('LBRACKET')
+        Разбирает операнд памяти.
+        Открывающая скобка уже прочитана в parse_operand.
         
+        Возвращает:
+        - строку "[выражение]" для абсолютной адресации (старый формат)
+        - кортеж (addr_type, base_reg, displacement, label) для косвенной
+        
+        Поддерживает:
+        [регистр]           → косвенная адресация (кортеж)
+        [число]             → абсолютная (строка)
+        [метка]             → абсолютная (строка)
+        [регистр + ...]     → пока не поддерживается (строка)
+        """
         parts = []
         
         # Разбираем содержимое до закрывающей скобки
@@ -246,7 +280,17 @@ class Parser:
             else:
                 raise ValueError(f"Неожиданный токен в адресации: {tok}")
         
-        # Собираем выражение
+        # Анализируем собранные части
+        if len(parts) == 1:
+            part = parts[0]
+            # Проверяем, регистр ли это
+            if part in REGISTERS:
+                # Косвенная адресация: [регистр]
+                return make_memory_operand('register_indirect', base_reg=part)
+            # Иначе: [число] или [метка] — возвращаем строку (старый формат)
+        
+        # Старое поведение для всего остального
+        # (абсолютная адресация, комплексная - пока не поддерживается)
         expr = ' '.join(parts)
         return f"[{expr}]"
     
@@ -264,17 +308,29 @@ class Parser:
                 continue
             operands.append(self.parse_operand())
         
-        self.parsed_lines.append(f"INSTR:{mnemonic}:{self.current_section}:" + ",".join(operands))
+        # Преобразуем операнды в строки для AST
+        str_operands = []
+        for op in operands:
+            if isinstance(op, tuple) and len(op) >= 2 and op[0] in ('absolute', 'register_indirect', 'complex'):
+                # Это кортеж памяти
+                str_operands.append(memory_operand_to_ast_string(op))
+            else:
+                # Это обычная строка (регистр, число, метка, старый формат памяти)
+                str_operands.append(op)
+        
+        self.parsed_lines.append(f"INSTR:{mnemonic}:{self.current_section}:" + ",".join(str_operands))
     
     def parse_all(self):
         while self.pos < len(self.tokens):
             self.parse_line()
         return self.parsed_lines
 
+
 def write_ast(ast_lines, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
         for line in ast_lines:
             f.write(line + '\n')
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

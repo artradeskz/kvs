@@ -82,6 +82,98 @@ def read_pass1(input_file):
     return data, labels, label_sections, symbols
 
 
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ПАРСИНГА AST ==========
+
+def parse_ast_line(line):
+    """
+    Универсальный разбор строки AST.
+    Возвращает (тип, словарь_полей).
+    
+    Форматы AST:
+    - DIRECTIVE:имя
+    - DIRECTIVE:имя:секция
+    - DIRECTIVE:имя:секция:данные
+    - DIRECTIVE:имя:имя_константы:значение
+    - LABEL:имя:секция
+    - INSTR:мнемоника:секция:операнд1,операнд2,...
+    
+    Операнды могут содержать двоеточия (MEM:reg_indirect:рбикс).
+    Поэтому для INSTR используется специальный разбор: первые 3 двоеточия
+    отделяют служебные поля, остальное — операнды.
+    """
+    if not line:
+        return None, {}
+    
+    line_type = line.split(':')[0]
+    
+    if line_type == "INSTR":
+        # Формат: INSTR:мнемоника:секция:операнды
+        # Находим первые три двоеточия
+        first_colon = line.find(':')
+        second_colon = line.find(':', first_colon + 1)
+        third_colon = line.find(':', second_colon + 1)
+        
+        if first_colon == -1 or second_colon == -1 or third_colon == -1:
+            return "INSTR", {}
+        
+        mnemonic = line[first_colon + 1 : second_colon]
+        section = line[second_colon + 1 : third_colon]
+        operands_str = line[third_colon + 1 :]
+        
+        operands = []
+        if operands_str:
+            operands = operands_str.split(',')
+        
+        return "INSTR", {
+            'mnemonic': mnemonic,
+            'section': section,
+            'operands': operands,
+            'operands_str': operands_str
+        }
+    
+    elif line_type == "DIRECTIVE":
+        parts = line.split(':')
+        directive = parts[1] if len(parts) > 1 else ""
+        
+        if directive in ('.текст', '.данные', '.бнд'):
+            return "DIRECTIVE", {'directive': directive}
+        
+        elif directive == '.глобал':
+            label = parts[2] if len(parts) > 2 else ""
+            return "DIRECTIVE", {'directive': directive, 'label': label}
+        
+        elif directive in ('.строка_нуль', '.строка'):
+            sec = parts[2] if len(parts) > 2 else ""
+            s = parts[3] if len(parts) > 3 else ""
+            return "DIRECTIVE", {'directive': directive, 'section': sec, 'string': s}
+        
+        elif directive == '.константа':
+            name = parts[2] if len(parts) > 2 else ""
+            value = parts[3] if len(parts) > 3 else ""
+            return "DIRECTIVE", {'directive': directive, 'name': name, 'value': value}
+        
+        elif directive == '.байт':
+            sec = parts[2] if len(parts) > 2 else ""
+            bytes_str = parts[3] if len(parts) > 3 else ""
+            return "DIRECTIVE", {'directive': directive, 'section': sec, 'bytes': bytes_str}
+        
+        elif directive in ('.резб', '.резс', '.рездс', '.резкс'):
+            sec = parts[2] if len(parts) > 2 else ""
+            count = parts[3] if len(parts) > 3 else "0"
+            return "DIRECTIVE", {'directive': directive, 'section': sec, 'count': count}
+        
+        else:
+            return "DIRECTIVE", {'directive': directive}
+    
+    elif line_type == "LABEL":
+        parts = line.split(':')
+        label_name = parts[1] if len(parts) > 1 else ""
+        sec = parts[2] if len(parts) > 2 else ""
+        return "LABEL", {'name': label_name, 'section': sec}
+    
+    return line_type, {}
+
+
 # ========== ОСНОВНОЙ КЛАСС ВТОРОГО ПРОХОДА ==========
 
 class Pass2:
@@ -130,17 +222,17 @@ class Pass2:
     
     def process_line(self, line):
         """Обрабатывает одну строку AST"""
-        parts = line.split(':')
-        line_type = parts[0]
+        line_type, fields = parse_ast_line(line)
         
         if line_type == "DIRECTIVE":
-            directive = parts[1]
+            directive = fields.get('directive', '')
+            
             if directive == '.текст':
                 self.current_section = ".text"
             elif directive == '.данные':
                 self.current_section = ".data"
             elif directive in ('.строка_нуль', '.строка'):
-                s = parts[3] if len(parts) > 3 else ""
+                s = fields.get('string', '')
                 real_s = unescape_string(s)
                 bstring = real_s.encode('utf-8')
                 if directive == '.строка_нуль':
@@ -159,8 +251,8 @@ class Pass2:
                 self.position[".data"] += len(bstring)
                 
             elif directive == '.байт':
-                if len(parts) > 3 and parts[3]:
-                    bytes_str = parts[3]
+                bytes_str = fields.get('bytes', '')
+                if bytes_str:
                     byte_values = bytes_str.split(',')
                     original_cmd = f".байт {bytes_str}"
                     start_addr = self.vaddr_data + self.position[".data"]
@@ -182,18 +274,15 @@ class Pass2:
                     self.position[".data"] += len(byte_values)
                     
         elif line_type == "LABEL":
-            label_name = parts[1]
-            sec = parts[2]
+            label_name = fields.get('name', '')
+            sec = fields.get('section', '')
             if label_name in self.labels:
                 self.position[sec] = self.labels[label_name]
             
         elif line_type == "INSTR":
-            mnemonic = parts[1]
-            sec = parts[2]
-            
-            operands = []
-            if len(parts) > 3 and parts[3]:
-                operands = parts[3].split(',')
+            mnemonic = fields.get('mnemonic', '')
+            sec = fields.get('section', '')
+            operands = fields.get('operands', [])
             
             if operands:
                 original_cmd = f"{mnemonic} {', '.join(operands)}"

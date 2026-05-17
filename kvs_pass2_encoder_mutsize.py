@@ -6,6 +6,23 @@
 Автономный модуль — не импортирует из kvs_pass2_encoder_fixsize.
 Содержит parse_operand, parse_memory_operand, инструкции с адресацией, диспетчер.
 Дублируемые с fixsize функции помечены комментарием # ДУБЛИКАТ.
+
+ФОРМАТ ВХОДНЫХ ДАННЫХ:
+- operands: список строк, по одной на операнд
+- Для косвенной адресации: 'MEM:reg_indirect:имя_регистра' (например 'MEM:reg_indirect:рбикс')
+- Для абсолютной адресации: '[число]' или '[метка]' (старый формат)
+- Для регистров: имя регистра (например 'раикс')
+- Для непосредственных значений: число или метка
+
+СТРУКТУРА REGISTERS (из kvs_data.py):
+- Ключ: имя регистра (строка, например "раикс", "рбикс")
+- Значение: индекс регистра (целое число 0-15)
+- Пример: REGISTERS["раикс"] = 0, REGISTERS["рбикс"] = 3
+
+СТРУКТУРА get_reg_info(reg_name):
+- Возвращает словарь: {"size": 64, "index": 0} для 64-битных
+- "index" — индекс регистра (0-15), используется в ModR/M и REX
+- "size" — размер в битах (8, 16, 32, 64)
 """
 
 import struct
@@ -53,11 +70,56 @@ def parse_memory_operand(operand_str, labels, label_sections, vaddr_text, vaddr_
     """
     Разбирает операнд памяти.
     Возвращает словарь с информацией или None.
-    Поддерживает:
+    
+    Поддерживаемые форматы:
     - [число] — абсолютный адрес
     - [метка] — адрес метки (из .data, .text или .бнд)
-    - [регистр] — косвенная адресация (TODO)
+    - MEM:reg_indirect:регистр — косвенная адресация (новый формат)
+    - MEM:absolute:число — абсолютный адрес (новый формат, для будущего использования)
+    - MEM:absolute:метка — абсолютный адрес по метке (новый формат, для будущего использования)
+    
+    Возвращаемый словарь:
+    - Для 'absolute': {'type': 'absolute', 'address': число}
+    - Для 'register_indirect': {'type': 'register_indirect', 'base_reg': имя_регистра}
     """
+    # --- Новый формат: MEM:тип:данные ---
+    if operand_str.startswith('MEM:'):
+        parts = operand_str.split(':')
+        if len(parts) >= 3:
+            addr_type = parts[1]
+            
+            if addr_type == 'reg_indirect':
+                # MEM:reg_indirect:имя_регистра
+                base_reg = parts[2]
+                if base_reg in REGISTERS:
+                    return {'type': 'register_indirect', 'base_reg': base_reg}
+            
+            elif addr_type == 'absolute':
+                # MEM:absolute:число или MEM:absolute:метка
+                value = parts[2]
+                if value.isdigit():
+                    return {'type': 'absolute', 'address': int(value)}
+                elif value.startswith('0x') or value.startswith('0X'):
+                    try:
+                        return {'type': 'absolute', 'address': int(value, 16)}
+                    except ValueError:
+                        pass
+                elif value in labels:
+                    section = label_sections.get(value, '.data')
+                    if section == '.text':
+                        base = vaddr_text
+                    elif section == '.data':
+                        base = vaddr_data
+                    elif section == '.бнд':
+                        base = vaddr_bnd if vaddr_bnd is not None else vaddr_data
+                    else:
+                        base = vaddr_text
+                    addr = labels[value] + base
+                    return {'type': 'absolute', 'address': addr}
+        
+        return None
+    
+    # --- Старый формат: [число] или [метка] ---
     if not operand_str.startswith('[') or not operand_str.endswith(']'):
         return None
     
@@ -127,13 +189,91 @@ def encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text):
     return code
 
 
+def encode_mov_reg_mem_indirect(reg_info, base_reg):
+    """
+    Кодирует MOV reg, [base_reg] — косвенная адресация.
+    Пример: mov rax, [rbx] → 48 8B 03
+    
+    Аргументы:
+    - reg_info: словарь от get_reg_info() с ключами 'index' (int) и 'size' (int)
+    - base_reg: строка с именем регистра, например 'рбикс'
+    
+    REGISTERS[base_reg] возвращает число-индекс (int), НЕ словарь.
+    """
+    code = bytearray()
+    reg = reg_info['index']
+    base = REGISTERS[base_reg]  # REGISTERS возвращает int (индекс регистра)
+    
+    rex = 0x48 if reg_info['size'] == 64 else 0x40
+    if reg >= 8:
+        rex |= 0x04  # REX.R
+    if base >= 8:
+        rex |= 0x01  # REX.B
+    code.append(rex)
+    code.append(0x8B)  # MOV r64, r/m64
+    
+    # Особый случай: [rbp] или [r13] требует disp8=0 при mod=00
+    # (mod=00 с r/m=101 означает RIP-relative, а не [rbp])
+    if (base & 7) == 5:
+        # mod=01 (disp8), reg, r/m=5
+        modrm = 0x40 | ((reg & 7) << 3) | 5
+        code.append(modrm)
+        code.append(0x00)  # disp8 = 0
+    else:
+        # mod=00, reg, r/m=base
+        modrm = ((reg & 7) << 3) | (base & 7)
+        code.append(modrm)
+    
+    return code
+
+
+def encode_mov_mem_reg_indirect(base_reg, reg_info):
+    """
+    Кодирует MOV [base_reg], reg — косвенная адресация.
+    Пример: mov [rsi], rax → 48 89 06
+    
+    Аргументы:
+    - base_reg: строка с именем регистра, например 'рсикс'
+    - reg_info: словарь от get_reg_info() с ключами 'index' (int) и 'size' (int)
+    
+    REGISTERS[base_reg] возвращает число-индекс (int), НЕ словарь.
+    """
+    code = bytearray()
+    reg = reg_info['index']
+    base = REGISTERS[base_reg]  # REGISTERS возвращает int (индекс регистра)
+    
+    rex = 0x48 if reg_info['size'] == 64 else 0x40
+    if reg >= 8:
+        rex |= 0x04  # REX.R
+    if base >= 8:
+        rex |= 0x01  # REX.B
+    code.append(rex)
+    code.append(0x89)  # MOV r/m64, r64
+    
+    # Особый случай: [rbp] или [r13] требует disp8=0 при mod=00
+    if (base & 7) == 5:
+        modrm = 0x40 | ((reg & 7) << 3) | 5
+        code.append(modrm)
+        code.append(0x00)
+    else:
+        modrm = ((reg & 7) << 3) | (base & 7)
+        code.append(modrm)
+    
+    return code
+
+
 def encode_mov_reg_mem(operands, labels, label_sections, symbols, vaddr_text, vaddr_data, current_pos, vaddr_bnd=None):
     """MOV reg, mem — загрузить"""
     reg_info = get_reg_info(operands[0])
     mem_operand = operands[1]
     mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data, vaddr_bnd)
-    if mem_info and mem_info['type'] == 'absolute':
-        return encode_mov_reg_mem_absolute(reg_info, mem_info, current_pos, vaddr_text)
+    
+    if mem_info:
+        if mem_info['type'] == 'absolute':
+            return encode_mov_reg_mem_absolute(reg_info, mem_info, current_pos, vaddr_text)
+        elif mem_info['type'] == 'register_indirect':
+            return encode_mov_reg_mem_indirect(reg_info, mem_info['base_reg'])
+    
     print(f"Предупреждение: сложная адресация '{mem_operand}' пока не поддерживается", file=sys.stderr)
     return b'\x90' * 3
 
@@ -143,8 +283,13 @@ def encode_mov_mem_reg(operands, labels, label_sections, symbols, vaddr_text, va
     mem_operand = operands[0]
     reg_info = get_reg_info(operands[1])
     mem_info = parse_memory_operand(mem_operand, labels, label_sections, vaddr_text, vaddr_data, vaddr_bnd)
-    if mem_info and mem_info['type'] == 'absolute':
-        return encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text)
+    
+    if mem_info:
+        if mem_info['type'] == 'absolute':
+            return encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text)
+        elif mem_info['type'] == 'register_indirect':
+            return encode_mov_mem_reg_indirect(mem_info['base_reg'], reg_info)
+    
     print(f"Предупреждение: сложная адресация '{mem_operand}' пока не поддерживается", file=sys.stderr)
     return b'\x90' * 3
 
@@ -871,6 +1016,9 @@ def encode_instruction(mnemonic, operands, labels, label_sections, symbols, vadd
     """
     Главный диспетчер генерации машинного кода.
     По мнемонике выбирает соответствующую функцию генерации.
+    
+    Аргументы:
+    - operands: список строк с операндами (например ['раикс', 'MEM:reg_indirect:рбикс'])
     """
     
     # ----- Инструкции без операндов -----
