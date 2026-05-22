@@ -1,0 +1,104 @@
+00000000  7F45              jg 0x47
+00000002  4C                rex.wr
+00000003  460201            add r8b,[rcx]
+00000006  0100              add [rax],eax
+00000010  0200              add al,[rax]
+00000012  3E0001            add [ds:rcx],al
+00000019  104000            adc [rax+0x0],al
+00000027  005020            add [rax+0x20],dl
+00000034  400038            add [rax],dil
+00000037  0003              add [rbx],al
+00000039  004000            add [rax+0x0],al
+0000003C  0500040001        add eax,0x1000400
+00000043  000400            add [rax+rax],al
+00000059  004000            add [rax+0x0],al
+00000060  E800000000        call 0x65
+00000069  1000              adc [rax],al
+00000071  1000              adc [rax],al
+00000077  0001              add [rcx],al
+0000007B  000500000000      add [rel 0x81],al
+00000081  1000              adc [rax],al
+00000089  104000            adc [rax+0x0],al
+00000090  0010              add [rax],dl
+00000097  004000            add [rax+0x0],al
+000000A0  0010              add [rax],dl
+000000A8  0010              add [rax],dl
+000000B0  0100              add [rax],eax
+000000B4  06                db 0x06
+000000B9  2000              and [rax],al
+000000C1  204000            and [rax+0x0],al
+000000C8  0020              add [rax],ah
+000000CF  001500000000      add [rel 0xd5],dl
+000000D9  1000              adc [rax],al
+000000E1  1000              adc [rax],al
+00000FFF  0048B8            add [rax-0x48],cl
+00001002  0100              add [rax],eax
+0000100A  48BF010000000000  mov rdi,0x1
+         -0000
+00001014  48BE002040000000  mov rsi,0x402000
+         -0000
+0000101E  48BA150000000000  mov rdx,0x15
+         -0000
+00001028  0F05              syscall
+0000102A  48B83C0000000000  mov rax,0x3c
+         -0000
+00001034  48BF000000000000  mov rdi,0x0
+         -0000
+0000103E  0F05              syscall
+00002000  D09FD180D0B8      rcr byte [rdi-0x472f7f2f],1
+00002006  D0                db 0xd0
+00002007  B2D0              mov dl,0xd0
+00002009  B5D1              mov ch,0xd1
+0000200B  82                db 0x82
+0000200C  20D0              and al,dl
+0000200E  BCD0B8D180        mov esp,0x80d1b8d0
+00002013  210A              and [rdx],ecx
+00002015  D0A1D0B1D0BE      shl byte [rcx-0x412f4e30],1
+0000201B  D180D189D0B8      rol dword [rax-0x472f762f],1
+00002021  D0BA20D09AD0      sar byte [rdx-0x2f652fe0],1
+00002027  92                xchg eax,edx
+00002028  D0A100000000      shl byte [rcx+0x0],1
+00002030  002E              add [rsi],ch
+00002032  7465              jz 0x2099
+00002034  7874              js 0x20aa
+00002036  002E              add [rsi],ch
+00002038  64                fs
+00002039  61                db 0x61
+0000203A  7461              jz 0x209d
+0000203C  002E              add [rsi],ch
+0000203E  63                db 0x63
+0000203F  6F                outsd
+00002040  6D                insd
+00002041  6D                insd
+00002042  656E              gs outsb
+00002044  7400              jz 0x2046
+00002046  2E7368            cs jnc 0x20b1
+00002049  7374              jnc 0x20bf
+0000204B  7274              jc 0x20c1
+0000204D  61                db 0x61
+0000204E  62                db 0x62
+0000207F  0001              add [rcx],al
+0000208F  0001              add [rcx],al
+00002093  0001              add [rcx],al
+00002097  0006              add [rsi],al
+000020A1  104000            adc [rax+0x0],al
+000020A8  0010              add [rax],dl
+000020BF  0010              add [rax],dl
+000020CF  0007              add [rdi],al
+000020D3  0001              add [rcx],al
+000020D7  0003              add [rbx],al
+000020E1  204000            and [rax+0x0],al
+000020E8  0020              add [rax],ah
+000020F0  1500000000        adc eax,0x0
+000020FF  0008              add [rax],cl
+0000210F  000D00000001      add [rel 0x1002115],cl
+00002127  001520000000      add [rel 0x214d],dl
+0000212F  0016              add [rsi],dl
+0000213F  0001              add [rcx],al
+0000214F  0016              add [rsi],dl
+00002153  0003              add [rbx],al
+00002167  0030              add [rax],dh
+00002169  2000              and [rax],al
+0000216F  0020              add [rax],ah
+0000217F  0001              add [rcx],al
+0000218F  00                db 0x00

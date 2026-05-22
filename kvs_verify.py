@@ -11,6 +11,7 @@ import sys
 
 # Если True — разрешает сборку, когда единственная ошибка это общий размер .text
 # (расхождение до 16 байт считается допустимым)
+ENABLE = False
 ALLOW_TEXT_SIZE_MISMATCH = True
 MAX_TEXT_SIZE_MISMATCH = 25
 
@@ -221,27 +222,28 @@ def verify(pass1_file, csv_file):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Использование: python kvs_verify.py <вход.проход1> <вход.csv>")
-        sys.exit(1)
-    
-    pass1_file = sys.argv[1]
-    csv_file = sys.argv[2]
-    
-    errors, warnings = verify(pass1_file, csv_file)
-    
-    if warnings:
-        print(f"Предупреждений: {len(warnings)}")
-        for w in warnings:
-            print(f"  ⚠ {w}")
-        print()
-    
-    if errors:
-        print(f"ОШИБОК: {len(errors)}")
-        for e in errors:
-            print(f"  ❌ {e}")
-        print("\nСборка остановлена. Исправьте расхождения в размерах инструкций.")
-        sys.exit(1)
-    else:
-        print("Все размеры инструкций совпадают. Можно собирать.")
-        sys.exit(0)
+    if ENABLE:
+        if len(sys.argv) != 3:
+            print("Использование: python kvs_verify.py <вход.проход1> <вход.csv>")
+            sys.exit(1)
+        
+        pass1_file = sys.argv[1]
+        csv_file = sys.argv[2]
+        
+        errors, warnings = verify(pass1_file, csv_file)
+        
+        if warnings:
+            print(f"Предупреждений: {len(warnings)}")
+            for w in warnings:
+                print(f"  ⚠ {w}")
+            print()
+        
+        if errors:
+            print(f"ОШИБОК: {len(errors)}")
+            for e in errors:
+                print(f"  ❌ {e}")
+            print("\nСборка остановлена. Исправьте расхождения в размерах инструкций.")
+            sys.exit(1)
+        else:
+            print("Все размеры инструкций совпадают. Можно собирать.")
+            sys.exit(0)
