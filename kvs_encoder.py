@@ -13,7 +13,7 @@ import sys
 from kvs_data import INSTRUCTIONS, REGISTERS, get_reg_info
 
 # Импорт из fixsize
-from kvs_pass2_encoder_fixsize import (
+from kvs_encoder_fixsize import (
     encode_mov_reg_reg,
     encode_mov_reg8_imm8,
     encode_cmp_reg_reg,
@@ -41,7 +41,7 @@ from kvs_pass2_encoder_fixsize import (
 )
 
 # Импорт из mutsize
-from kvs_pass2_encoder_mutsize import (
+from kvs_encoder_mutsize import (
     parse_operand,
     parse_memory_operand,
     encode_mov_reg_mem_absolute,
