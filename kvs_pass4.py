@@ -17,9 +17,9 @@ from kvs_data import PAGE_SIZE, text_vaddr_base, align_up
 from kvs_encoder import encode_instruction
 
 # ========== ГЛОБАЛЬНОЕ СОСТОЯНИЕ ==========
-vaddr_text = text_vaddr_base
-vaddr_data = 0x402000
-vaddr_bnd = None
+vaddr_text = None      # будет прочитано из CSV
+vaddr_data = None      # будет прочитано из CSV
+vaddr_bnd = None       # будет прочитано из CSV
 
 labels = {}
 label_sections = {}
@@ -53,6 +53,57 @@ def parse_command(cmd_str):
     return mnemonic, operands
 
 
+def detect_section_addresses(entries, headers):
+    """
+    Определяет виртуальные адреса секций из CSV.
+    """
+    global vaddr_text, vaddr_data, vaddr_bnd
+    
+    try:
+        segment_idx = headers.index('сегмент')
+        virt_addr_idx = headers.index('виртуальный_адрес')
+    except ValueError as e:
+        print(f"Ошибка: не найдена нужная колонка в CSV: {e}")
+        sys.exit(1)
+    
+    found_text = False
+    found_data = False
+    found_bnd = False
+    
+    for row in entries:
+        segment = row[segment_idx].strip()
+        virt_addr_str = row[virt_addr_idx].strip()
+        
+        if not virt_addr_str.startswith('0x'):
+            continue
+        
+        virt_addr = int(virt_addr_str, 16)
+        
+        if segment == '.text' and not found_text:
+            vaddr_text = virt_addr
+            found_text = True
+            print(f"  .text: 0x{vaddr_text:x}")
+        
+        elif segment == '.data' and not found_data:
+            vaddr_data = virt_addr
+            found_data = True
+            print(f"  .data: 0x{vaddr_data:x}")
+        
+        elif segment == '.bss' and not found_bnd:
+            vaddr_bnd = virt_addr
+            found_bnd = True
+            print(f"  .bss: 0x{vaddr_bnd:x}")
+    
+    # Проверяем, что все нужные секции найдены
+    if not found_text:
+        print("  Ошибка: секция .text не найдена в CSV")
+        sys.exit(1)
+    
+    if not found_data:
+        print("  Предупреждение: секция .data не найдена в CSV")
+        vaddr_data = 0x402000  # fallback
+
+
 def collect_labels_from_csv(entries, headers):
     """
     Собирает метки из CSV, используя колонку 'виртуальный_адрес'
@@ -80,6 +131,26 @@ def collect_labels_from_csv(entries, headers):
                         label_sections[label_name] = ''
 
 
+def get_section_for_address(virt_addr):
+    """
+    Определяет секцию по виртуальному адресу
+    """
+    if vaddr_text is not None and virt_addr >= vaddr_text:
+        # Простая эвристика: если адрес в диапазоне .text (первые 0x1000 байт)
+        if virt_addr < vaddr_text + PAGE_SIZE:
+            return '.text'
+    
+    if vaddr_data is not None and virt_addr >= vaddr_data:
+        if virt_addr < vaddr_data + PAGE_SIZE:
+            return '.data'
+    
+    if vaddr_bnd is not None and virt_addr >= vaddr_bnd:
+        if virt_addr < vaddr_bnd + PAGE_SIZE:
+            return '.bss'
+    
+    return '.unknown'
+
+
 def reencode_instructions(entries, headers):
     try:
         source_with_values_idx = headers.index('команда_со_значениями')
@@ -87,6 +158,7 @@ def reencode_instructions(entries, headers):
         addr_idx = headers.index('адрес')
         virt_addr_idx = headers.index('виртуальный_адрес')
         byte_idx = headers.index('байт')
+        segment_idx = headers.index('сегмент')
     except ValueError as e:
         print(f"Ошибка: не найдена нужная колонка в CSV: {e}")
         sys.exit(1)
@@ -143,19 +215,27 @@ def reencode_instructions(entries, headers):
                                 print(f"  В диапазоне [-128..127]: {-128 <= offset <= 127}")
                     
                     # Вычисляем current_pos как смещение в секции
-                    # Определяем секцию по виртуальному адресу
-                    if 0x401000 <= instr_virt_addr < 0x402000:
-                        current_pos = instr_virt_addr - vaddr_text
-                    elif 0x402000 <= instr_virt_addr < 0x403000:
-                        current_pos = instr_virt_addr - vaddr_data
-                    else:
-                        current_pos = instr_virt_addr
+                    section = row[segment_idx].strip()
                     
-                    # Преобразуем операнды: если строка с 0x, оставляем как есть
-                    # Кодировщик сам разберётся с isdigit()
+                    if section == '.text':
+                        current_pos = instr_virt_addr - vaddr_text
+                    elif section == '.data':
+                        current_pos = instr_virt_addr - vaddr_data
+                    elif section == '.bss':
+                        current_pos = instr_virt_addr - vaddr_bnd if vaddr_bnd else 0
+                    else:
+                        # Fallback: определяем по диапазону адресов
+                        if vaddr_text and 0x401000 <= instr_virt_addr < 0x402000:
+                            current_pos = instr_virt_addr - vaddr_text
+                        elif vaddr_data and 0x402000 <= instr_virt_addr < 0x403000:
+                            current_pos = instr_virt_addr - vaddr_data
+                        else:
+                            current_pos = instr_virt_addr
+                    
                     encoded = encode_instruction(
                         mnemonic, operands, labels, label_sections, symbols,
-                        vaddr_text, vaddr_data, current_pos, vaddr_bnd
+                        vaddr_text, vaddr_data if vaddr_data else 0,
+                        current_pos, vaddr_bnd if vaddr_bnd else 0
                     )
                     
                     if mnemonic.startswith('короткий_переход') or mnemonic.startswith('переход'):
@@ -218,6 +298,9 @@ def main():
     print(f"Чтение CSV: {csv_file}")
     
     headers, entries = read_csv(csv_file)
+    
+    print(f"\n--- Определение адресов секций из CSV ---")
+    detect_section_addresses(entries, headers)
     
     print(f"\n--- Сбор меток из CSV ---")
     collect_labels_from_csv(entries, headers)

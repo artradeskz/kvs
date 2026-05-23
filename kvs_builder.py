@@ -94,7 +94,7 @@ def main():
         print(f"  Размер файла: {max(addresses) + 1} байт (0x{max(addresses) + 1:x})")
         print(f"  Выходной файл: {elf_file}")
         print(f"\n  Исполняемый файл готов!")
-        print(f"  Запустить: ./{elf_file}")
+        print(f"  Запустить: {elf_file}")
     else:
         print("Ошибка при сборке")
         sys.exit(1)
