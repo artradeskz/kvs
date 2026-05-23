@@ -2,13 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Второй проход КВС
-- Собирает адреса всех приводящих меток (поддерживает несколько меток через запятую)
+Второй проход КВС (упрощённый)
+- Собирает адреса всех приводящих меток из колонки 'виртуальный_адрес'
 - Заменяет заглушки в уводящих адресах на реальные адреса
 - Записывает рассчитанные значения в колонку 'рассчитанный_уводящий_адрес' (файловое смещение)
-- Формирует команду с подставленными адресами в колонку 'команда_со_значениями' (виртуальный адрес)
-- Пропускает заглушки, которые не найдены (возможно это константы)
-- Выводит статистику по неразрешённым заглушкам
+- Формирует команду с подставленными виртуальными адресами в колонку 'команда_со_значениями'
 """
 
 import sys
@@ -30,55 +28,17 @@ def read_csv(csv_file):
     return headers, entries
 
 
-def get_virtual_addresses(entries, headers):
-    """
-    Извлекает виртуальные адреса секций из заголовка CSV
-    Возвращает (vaddr_text, vaddr_data)
-    """
-    vaddr_text = 0x401000
-    vaddr_data = 0x402000
-    
-    try:
-        source_idx = headers.index('исходная_команда')
-        calc_target_idx = headers.index('рассчитанный_уводящий_адрес')
-    except ValueError:
-        return vaddr_text, vaddr_data
-    
-    for row in entries:
-        source = row[source_idx].strip()
-        calc_target = row[calc_target_idx].strip()
-        
-        if 'p_vaddr (text)' in source and calc_target:
-            parts = calc_target.split('=')
-            if len(parts) >= 2:
-                addr_str = parts[1].strip()
-                if addr_str.startswith('0x'):
-                    vaddr_text = int(addr_str, 16)
-        
-        elif 'p_vaddr (data)' in source and calc_target:
-            parts = calc_target.split('=')
-            if len(parts) >= 2:
-                addr_str = parts[1].strip()
-                if addr_str.startswith('0x'):
-                    vaddr_data = int(addr_str, 16)
-    
-    return vaddr_text, vaddr_data
-
-
-def collect_labels(entries, headers, vaddr_text, vaddr_data):
+def collect_labels(entries, headers):
     """
     Собирает адреса всех приводящих меток.
-    Возвращает два словаря:
-    - labels_file: имя метки -> файловое смещение
-    - labels_virt: имя метки -> виртуальный адрес
+    Использует колонку 'виртуальный_адрес' для получения адреса метки.
+    Возвращает словарь: имя метки -> виртуальный адрес
     """
-    labels_file = {}  # имя метки -> файловое смещение
-    labels_virt = {}  # имя метки -> виртуальный адрес
+    labels = {}
     
     try:
         label_idx = headers.index('приводящая_метка')
-        addr_idx = headers.index('адрес')
-        segment_idx = headers.index('сегмент')
+        virt_addr_idx = headers.index('виртуальный_адрес')
     except ValueError as e:
         print(f"Ошибка: не найдена нужная колонка в CSV: {e}")
         sys.exit(1)
@@ -86,33 +46,33 @@ def collect_labels(entries, headers, vaddr_text, vaddr_data):
     for row in entries:
         label_str = row[label_idx].strip()
         if label_str:
-            addr_str = row[addr_idx].strip()
-            if addr_str.startswith('0x'):
-                file_addr = int(addr_str, 16)
-                segment = row[segment_idx].strip()
+            virt_addr_str = row[virt_addr_idx].strip()
+            if virt_addr_str.startswith('0x'):
+                virt_addr = int(virt_addr_str, 16)
                 
-                # Вычисляем виртуальный адрес
-                if segment == '.text':
-                    virt_addr = vaddr_text + (file_addr - 0x1000)
-                elif segment == '.data':
-                    virt_addr = vaddr_data + (file_addr - 0x2000)
-                else:
-                    virt_addr = file_addr
-                
-                # Разделяем несколько меток через запятую
                 for label_name in label_str.split(','):
                     label_name = label_name.strip()
                     if label_name:
-                        labels_file[label_name] = file_addr
-                        labels_virt[label_name] = virt_addr
+                        labels[label_name] = virt_addr
     
-    return labels_file, labels_virt
+    # Выводим статистику собранных меток
+    print(f"\n{'='*80}")
+    print(f"СОБРАННЫЕ ПРИВОДЯЩИЕ МЕТКИ (всего: {len(labels)})")
+    print(f"{'='*80}")
+    print(f"\n{'Имя метки':<35} {'Виртуальный адрес':<22}")
+    print(f"{'-'*57}")
+    
+    for name in sorted(labels.keys()):
+        virt_addr = labels[name]
+        print(f"{name:<35} 0x{virt_addr:08x} ({virt_addr})")
+    
+    return labels
 
 
-def resolve_targets(entries, headers, labels_file, labels_virt):
+def resolve_targets(entries, headers, labels):
     """
     Заменяет уводящие адреса-заглушки на реальные адреса
-    - рассчитанный_уводящий_адрес: файловое смещение
+    - рассчитанный_уводящий_адрес: файловое смещение (берём из колонки 'адрес')
     - команда_со_значениями: виртуальный адрес
     """
     try:
@@ -120,12 +80,13 @@ def resolve_targets(entries, headers, labels_file, labels_virt):
         calc_target_idx = headers.index('рассчитанный_уводящий_адрес')
         source_idx = headers.index('исходная_команда')
         source_with_values_idx = headers.index('команда_со_значениями')
+        addr_idx = headers.index('адрес')
     except ValueError as e:
         print(f"Ошибка: не найдена нужная колонка в CSV: {e}")
         sys.exit(1)
     
-    resolved = []  # (имя_метки, файловый_адрес, виртуальный_адрес)
-    unresolved = []  # имя_метки
+    resolved = []
+    unresolved = []
     
     for row in entries:
         target = row[target_idx].strip()
@@ -133,17 +94,22 @@ def resolve_targets(entries, headers, labels_file, labels_virt):
         if target and target.startswith('ЗАГЛУШКА '):
             label_name = target.replace('ЗАГЛУШКА ', '').strip()
             
-            if label_name in labels_file:
-                file_addr = labels_file[label_name]
-                virt_addr = labels_virt[label_name]
-                file_hex = f"0x{file_addr:08x}"
+            if label_name in labels:
+                virt_addr = labels[label_name]
                 virt_hex = f"0x{virt_addr:08x}"
                 
-                # Файловое смещение в рассчитанный_уводящий_адрес
-                row[calc_target_idx] = file_hex
-                resolved.append((label_name, file_addr, virt_addr))
+                # Файловое смещение берём из колонки 'адрес' текущей строки
+                addr_str = row[addr_idx].strip()
+                if addr_str.startswith('0x'):
+                    file_addr = int(addr_str, 16)
+                    file_hex = f"0x{file_addr:08x}"
+                    row[calc_target_idx] = file_hex
+                    resolved.append((label_name, file_addr, virt_addr))
+                else:
+                    row[calc_target_idx] = ""
+                    resolved.append((label_name, 0, virt_addr))
                 
-                # Виртуальный адрес в команда_со_значениями
+                # Подставляем виртуальный адрес в команду
                 source_cmd = row[source_idx].strip()
                 if source_cmd:
                     cmd_with_addr = source_cmd.replace(label_name, virt_hex)
@@ -151,6 +117,46 @@ def resolve_targets(entries, headers, labels_file, labels_virt):
             else:
                 unresolved.append(label_name)
                 row[calc_target_idx] = ""
+    
+    # Выводим статистику разрешённых заглушек
+    print(f"\n{'='*80}")
+    print(f"РАЗРЕШЁННЫЕ ЗАГЛУШКИ (всего: {len(resolved)})")
+    print(f"{'='*80}")
+    
+    if resolved:
+        unique_resolved = {}
+        for name, file_addr, virt_addr in resolved:
+            if name not in unique_resolved:
+                unique_resolved[name] = (file_addr, virt_addr)
+        
+        print(f"\nУникальных меток: {len(unique_resolved)}")
+        print(f"\n{'Имя метки':<35} {'Файловое смещение':<22} {'Виртуальный адрес':<22}")
+        print(f"{'-'*79}")
+        
+        for name in sorted(unique_resolved.keys()):
+            file_addr, virt_addr = unique_resolved[name]
+            if file_addr:
+                print(f"{name:<35} 0x{file_addr:08x} ({file_addr:<10}) 0x{virt_addr:08x} ({virt_addr})")
+            else:
+                print(f"{name:<35} {'(не известно)':<22} 0x{virt_addr:08x} ({virt_addr})")
+    else:
+        print("\n--- НЕТ РАЗРЕШЁННЫХ ЗАГЛУШЕК ---")
+    
+    # Выводим статистику неразрешённых заглушек
+    print(f"\n{'='*80}")
+    print(f"НЕРАЗРЕШЁННЫЕ ЗАГЛУШКИ (всего: {len(unresolved)})")
+    print(f"{'='*80}")
+    
+    if unresolved:
+        unresolved_counts = Counter(unresolved)
+        print(f"\nУникальных неразрешённых имён: {len(unresolved_counts)}")
+        print(f"\n{'Имя метки':<35} {'Количество вхождений':<20}")
+        print(f"{'-'*55}")
+        
+        for name, count in sorted(unresolved_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"{name:<35} {count}")
+    else:
+        print("\n--- НЕТ НЕРАЗРЕШЁННЫХ ЗАГЛУШЕК ---")
     
     return resolved, unresolved
 
@@ -163,36 +169,6 @@ def save_csv(csv_file, headers, entries):
         writer.writerows(entries)
 
 
-def print_statistics(labels_count, resolved, unresolved, vaddr_text, vaddr_data):
-    """Выводит статистику по разрешению меток"""
-    print(f"\n--- Статистика разрешения меток ---")
-    print(f"  Виртуальный адрес .text: 0x{vaddr_text:x}")
-    print(f"  Виртуальный адрес .data: 0x{vaddr_data:x}")
-    print(f"  Всего приводящих меток: {labels_count}")
-    print(f"  Разрешено заглушек: {len(resolved)}")
-    print(f"  Не разрешено заглушек (возможно константы): {len(unresolved)}")
-    
-    if resolved:
-        unique_resolved = {}
-        for name, file_addr, virt_addr in resolved:
-            if name not in unique_resolved:
-                unique_resolved[name] = (file_addr, virt_addr)
-        
-        print(f"\n--- Разрешённые заглушки (первые 20) ---")
-        for i, (name, (file_addr, virt_addr)) in enumerate(list(unique_resolved.items())[:20]):
-            print(f"    {name} -> файл:0x{file_addr:08x}, вирт:0x{virt_addr:08x}")
-        if len(unique_resolved) > 20:
-            print(f"    ... и ещё {len(unique_resolved) - 20}")
-    
-    if unresolved:
-        unresolved_counts = Counter(unresolved)
-        print(f"\n--- Неразрешённые заглушки (возможно константы) ---")
-        for name, count in sorted(unresolved_counts.items(), key=lambda x: x[1], reverse=True)[:20]:
-            print(f"    {name}: {count} раз(а)")
-        if len(unresolved_counts) > 20:
-            print(f"    ... и ещё {len(unresolved_counts) - 20} различных имён")
-
-
 def main():
     if len(sys.argv) != 2:
         print("Использование: python kvs_pass2.py <входной.csv>")
@@ -200,33 +176,27 @@ def main():
     
     csv_file = sys.argv[1]
     
-    print(f"\n=== Второй проход КВС ===")
+    print(f"\n=== ВТОРОЙ ПРОХОД КВС (упрощённый) ===")
     print(f"Чтение CSV: {csv_file}")
     
     headers, entries = read_csv(csv_file)
     
-    vaddr_text, vaddr_data = get_virtual_addresses(entries, headers)
-    print(f"Виртуальный адрес .text: 0x{vaddr_text:x}")
-    print(f"Виртуальный адрес .data: 0x{vaddr_data:x}")
+    print(f"\n--- СБОР ПРИВОДЯЩИХ МЕТОК ---")
+    labels = collect_labels(entries, headers)
     
-    print(f"\n--- Сбор приводящих меток ---")
-    labels_file, labels_virt = collect_labels(entries, headers, vaddr_text, vaddr_data)
-    print(f"Найдено приводящих меток: {len(labels_file)}")
+    print(f"\n--- РАЗРЕШЕНИЕ УВОДЯЩИХ АДРЕСОВ ---")
+    resolved, unresolved = resolve_targets(entries, headers, labels)
     
-    if labels_file:
-        print(f"\n--- Примеры приводящих меток (первые 20) ---")
-        for i, name in enumerate(list(labels_file.keys())[:20]):
-            print(f"    {name} -> файл:0x{labels_file[name]:08x}, вирт:0x{labels_virt[name]:08x}")
-        if len(labels_file) > 20:
-            print(f"    ... и ещё {len(labels_file) - 20}")
-    
-    print(f"\n--- Разрешение уводящих адресов и формирование команд ---")
-    resolved, unresolved = resolve_targets(entries, headers, labels_file, labels_virt)
-    
-    print_statistics(len(labels_file), resolved, unresolved, vaddr_text, vaddr_data)
+    print(f"\n{'='*80}")
+    print(f"ОБЩАЯ СТАТИСТИКА")
+    print(f"{'='*80}")
+    print(f"  Приводящих меток в CSV: {len(labels)}")
+    print(f"  Разрешено заглушек: {len(resolved)}")
+    print(f"  Не разрешено заглушек: {len(unresolved)}")
+    print(f"{'='*80}")
     
     save_csv(csv_file, headers, entries)
-    print(f"\nCSV сохранен: {csv_file}")
+    print(f"\nCSV сохранён: {csv_file}")
 
 
 if __name__ == "__main__":

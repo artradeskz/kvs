@@ -6,8 +6,9 @@
 Генерирует CSV-таблицу напрямую из AST
 - Неизвестные метки заменяются заглушками (0xCC) с пометкой в колонке 'уводящий_адрес'
 - В колонке 'приводящая_метка' записываются имена меток, находящихся по данному адресу (через запятую)
-- Колонка 'команда_со_значениями' оставлена пустой (для возможного расширения)
+- Колонка 'команда_со_значениями' оставлена пустой (для второго прохода)
 - Колонки 'рассчитанный_уводящий_адрес' и 'рассчитанный_байт' оставлены для второго прохода
+- Колонка 'виртуальный_адрес' содержит виртуальный адрес байта (для pass4)
 """
 
 import sys
@@ -18,7 +19,7 @@ from kvs_data import PAGE_SIZE, text_vaddr_base, align_up
 from kvs_encoder import encode_instruction
 
 # ========== ГЛОБАЛЬНОЕ СОСТОЯНИЕ ==========
-entries = []  # (segment, address, byte, target, source, label, source_with_values, calc_target, calc_byte)
+entries = []  # (segment, address, virt_addr, byte, target, source, label, cmd_with_values, calc_target, calc_byte)
 current_address = 0
 current_segment = '.header'
 last_segment = None
@@ -31,18 +32,45 @@ text_buffer = bytearray()
 data_buffer = bytearray()
 bnd_size = 0
 
-labels = {}  # имя метки -> адрес
-label_sections = {}  # имя метки -> секция
-symbols = {}  # имя константы -> значение
+labels = {}
+label_sections = {}
+symbols = {}
 
-# Для сбора нескольких меток на один адрес
-pending_labels = []  # список имён меток, ожидающих привязки к следующему байту
+pending_labels = []
 
 text_pos = 0
 data_pos = 0
 
 entry_point = "_start"
 relocations = []
+
+# Список инструкций, которые всегда должны получать заглушки в первом проходе
+ALWAYS_STUB_INSTRUCTIONS = {
+    "переход",
+    "короткий_переход",
+    "вызвать",
+    "цикл",
+    "переход_если_равно",
+    "переход_если_неравно",
+    "переход_если_меньше",
+    "переход_если_больше",
+    "переход_если_меньше_или_равно",
+    "переход_если_больше_или_равно",
+    "переход_если_перенос",
+    "переход_если_нет_переноса",
+    "переход_если_ноль",
+    "переход_если_не_ноль",
+    "короткий_переход_если_равно",
+    "короткий_переход_если_неравно",
+    "короткий_переход_если_меньше",
+    "короткий_переход_если_больше",
+    "короткий_переход_если_меньше_или_равно",
+    "короткий_переход_если_больше_или_равно",
+    "короткий_переход_если_перенос",
+    "короткий_переход_если_нет_переноса",
+    "короткий_переход_если_ноль",
+    "короткий_переход_если_не_ноль",
+}
 
 
 def reset_state():
@@ -75,11 +103,21 @@ def set_segment(segment: str):
     current_segment = segment
 
 
+def get_virtual_address():
+    """Возвращает виртуальный адрес для текущей позиции"""
+    if current_segment == '.text':
+        return vaddr_text + (current_address - 0x1000)
+    elif current_segment == '.data':
+        if vaddr_data is None:
+            return current_address
+        return vaddr_data + (current_address - 0x2000)
+    else:
+        return current_address
+
+
 def add_byte(value: int, source: str = "", target=None, labels_list=None):
-    """Добавить один байт в текущую позицию"""
     global current_address, last_segment, pending_labels
     
-    # Если есть отложенные метки, объединяем их через запятую
     effective_labels = ""
     if labels_list is not None and labels_list:
         effective_labels = ','.join(labels_list)
@@ -90,20 +128,23 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
     if show_segment:
         last_segment = current_segment
     
+    virt_addr = get_virtual_address()
+    byte_val = value & 0xFF
+    
     entries.append((
-        show_segment if show_segment else "",  # segment
-        current_address,                       # address
-        value & 0xFF,                          # byte
-        target if target else "",              # target (уводящий_адрес)
-        source,                                # source (исходная_команда)
-        effective_labels,                      # label (приводящая_метка) - несколько через запятую
-        "",                                    # source_with_values (команда_со_значениями) - всегда пусто
-        "",                                    # calc_target
-        ""                                     # calc_byte
+        show_segment if show_segment else "",
+        current_address,
+        f"0x{virt_addr:08x}",  # виртуальный_адрес
+        f"0x{byte_val:02x}",    # байт (в виде hex-строки)
+        target if target else "",
+        source,
+        effective_labels,
+        "",                     # команда_со_значениями (заполняется во втором проходе)
+        "",                     # рассчитанный_уводящий_адрес
+        f"0x{byte_val:02x}"     # рассчитанный_байт (изначально = байт)
     ))
     current_address += 1
     
-    # После добавления байта сбрасываем отложенные метки
     if pending_labels:
         pending_labels = []
 
@@ -114,7 +155,6 @@ def add_bytes(values, source: str = "", target=None):
 
 
 def add_word16(value: int, source: str = "", target=None):
-    """Добавить 16-битное слово (little-endian)"""
     add_bytes([
         (value >> 0) & 0xFF,
         (value >> 8) & 0xFF,
@@ -122,7 +162,6 @@ def add_word16(value: int, source: str = "", target=None):
 
 
 def add_word32(value: int, source: str = "", target=None):
-    """Добавить 32-битное слово (little-endian)"""
     add_bytes([
         (value >> 0) & 0xFF,
         (value >> 8) & 0xFF,
@@ -132,7 +171,6 @@ def add_word32(value: int, source: str = "", target=None):
 
 
 def add_word64(value: int, source: str = "", target=None):
-    """Добавить 64-битное слово (little-endian)"""
     add_bytes([
         (value >> 0) & 0xFF,
         (value >> 8) & 0xFF,
@@ -174,48 +212,29 @@ def unescape_string(s):
 
 
 def generate_elf_header():
-    # EI_MAGIC
     add_bytes([0x7F, 0x45, 0x4C, 0x46], "ELF magic")
-    # EI_CLASS, EI_DATA, EI_VERSION
     add_byte(2, "ELFCLASS64")
     add_byte(1, "ELFDATA2LSB")
     add_byte(1, "ELF version")
-    # EI_OSABI, EI_ABIVERSION
     add_byte(0, "OS ABI")
     add_byte(0, "ABI version")
-    # EI_PAD
     add_bytes([0] * 7, "Padding")
-    
-    # e_type (2 байта)
     add_word16(2, "e_type = ET_EXEC")
-    # e_machine (2 байта)
     add_word16(62, "e_machine = EM_X86_64")
-    # e_version (4 байта)
     add_word32(1, "e_version")
-    # e_entry (8 байт, заглушка)
     add_word64(0, "e_entry (stub)")
-    # e_phoff (8 байт)
     add_word64(64, "e_phoff")
-    # e_shoff (8 байт)
     add_word64(0, "e_shoff = 0")
-    # e_flags (4 байта)
     add_word32(0, "e_flags")
-    # e_ehsize (2 байта)
     add_word16(64, "e_ehsize")
-    # e_phentsize (2 байта)
     add_word16(56, "e_phentsize")
-    # e_phnum (2 байта)
     add_word16(2, "e_phnum = 2")
-    # e_shentsize (2 байта)
     add_word16(0, "e_shentsize = 0")
-    # e_shnum (2 байта)
     add_word16(0, "e_shnum = 0")
-    # e_shstrndx (2 байта)
     add_word16(0, "e_shstrndx")
 
 
 def generate_program_headers():
-    # Program Header 1: TEXT (RX)
     add_word32(1, "p_type = PT_LOAD")
     add_word32(5, "p_flags = RX")
     add_word64(0, "p_offset (text stub)")
@@ -225,7 +244,6 @@ def generate_program_headers():
     add_word64(0, "p_memsz (text stub)")
     add_word64(PAGE_SIZE, "p_align")
     
-    # Program Header 2: DATA (RW)
     add_word32(1, "p_type = PT_LOAD")
     add_word32(6, "p_flags = RW")
     add_word64(0, "p_offset (data stub)")
@@ -258,7 +276,6 @@ def parse_ast_line(line):
         mnemonic = line[first + 1:second]
         section = line[second + 1:third]
         operands_str = line[third + 1:]
-        
         operands = operands_str.split(',') if operands_str else []
         
         return "INSTR", {
@@ -313,7 +330,17 @@ def parse_ast_line(line):
 
 
 def get_stub_size(mnemonic, operands):
-    if mnemonic == "переместить_имм" and len(operands) >= 2:
+    if mnemonic in ("переход", "вызвать"):
+        return 5
+    elif mnemonic == "короткий_переход":
+        return 2
+    elif mnemonic.startswith("переход_если") and not mnemonic.startswith("короткий"):
+        return 6
+    elif mnemonic.startswith("короткий_переход_если"):
+        return 2
+    elif mnemonic == "цикл":
+        return 2
+    elif mnemonic == "переместить_имм" and len(operands) >= 2:
         reg = operands[0]
         if reg in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
                    'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15'):
@@ -322,46 +349,88 @@ def get_stub_size(mnemonic, operands):
             return 7
         else:
             return 2
-    elif mnemonic in ("переход", "вызвать"):
-        return 5
-    elif mnemonic.startswith("короткий_переход"):
-        return 2
-    elif mnemonic.startswith("переход_если"):
-        return 6
-    elif mnemonic.startswith("короткий_переход_если"):
-        return 2
     elif mnemonic in ("загрузить", "сохранить", "загрузить_адрес"):
+        return 7
+    elif mnemonic == "сравнить_с":
+        return 7
+    elif mnemonic in ("прибавить_непосредственно", "вычесть_непосредственно"):
+        return 7
+    elif mnemonic in ("переместить_с_нулями", "переместить_со_знаком"):
         return 7
     return 1
 
 
-def has_unresolved_labels(operands):
+def extract_label_from_operands(operands):
+    """Извлекает первую метку из операндов инструкции"""
+    for op in operands:
+        if not op:
+            continue
+        # Пропускаем регистры
+        if op in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
+                  'еаикс', 'ебикс', 'есикс', 'едикс',
+                  'аикс', 'бикс', 'сикс', 'дикс',
+                  'ал', 'бл', 'кл', 'дл',
+                  'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15'):
+            continue
+        # Пропускаем числа
+        if op.isdigit() or (op.startswith('0x') and len(op) > 2):
+            continue
+        # Пропускаем косвенную адресацию через регистр
+        if op.startswith('MEM:reg_indirect:'):
+            continue
+        # Извлекаем метку из [метка]
+        if op.startswith('[') and op.endswith(']'):
+            inner = op[1:-1]
+            if inner not in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай'):
+                if not inner.isdigit() and not inner.startswith('0x'):
+                    return inner
+        # Обычная метка
+        elif op not in symbols:
+            return op
+    return None
+
+
+def has_unresolved_labels(operands, mnemonic=""):
+    if mnemonic in ALWAYS_STUB_INSTRUCTIONS:
+        for op in operands:
+            if op and not op.isdigit() and not op.startswith('0x'):
+                if op not in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
+                              'еаикс', 'ебикс', 'есикс', 'едикс',
+                              'аикс', 'бикс', 'сикс', 'дикс',
+                              'ал', 'бл', 'кл', 'дл'):
+                    return True
+    
     for op in operands:
         if not op:
             continue
         if op in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
-                  'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15',
                   'еаикс', 'ебикс', 'есикс', 'едикс',
                   'аикс', 'бикс', 'сикс', 'дикс',
-                  'ал', 'бл', 'кл', 'дл'):
+                  'ал', 'бл', 'кл', 'дл',
+                  'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15',
+                  'р8д', 'р9д', 'р10д', 'р11д', 'р12д', 'р13д', 'р14д', 'р15д',
+                  'р8в', 'р9в', 'р10в', 'р11в', 'р12в', 'р13в', 'р14в', 'р15в',
+                  'р8б', 'р9б', 'р10б', 'р11б', 'р12б', 'р13б', 'р14б', 'р15б',
+                  'спл', 'бпл', 'сил', 'дил'):
+            continue
+        if op.startswith('MEM:reg_indirect:'):
             continue
         if op.startswith('[') and op.endswith(']'):
             inner = op[1:-1]
             if inner in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай'):
                 continue
-            if inner in labels:
+            if inner.isdigit() or (inner.startswith('0x') and len(inner) > 2):
                 continue
-            if inner.isdigit() or (inner.startswith('0x')):
-                continue
-            return True
-        elif op in labels:
+            if inner not in labels:
+                return True
             continue
-        elif op.isdigit() or (op.startswith('0x')):
+        if op.isdigit() or (op.startswith('0x') and len(op) > 2):
             continue
-        else:
-            if op in symbols:
-                continue
+        if op in symbols:
+            continue
+        if op not in labels:
             return True
+    
     return False
 
 
@@ -380,7 +449,8 @@ def get_unresolved_labels(operands):
             if op not in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
                           'еаикс', 'ебикс', 'есикс', 'едикс',
                           'аикс', 'бикс', 'сикс', 'дикс',
-                          'ал', 'бл', 'кл', 'дл'):
+                          'ал', 'бл', 'кл', 'дл',
+                          'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15'):
                 if op not in symbols:
                     unresolved.append(op)
     return unresolved
@@ -505,17 +575,25 @@ def process_ast_line(line):
         
         source = f"{mnemonic} {', '.join(operands)}" if operands else mnemonic
         
-        source_with_values = ""
+        need_stub = has_unresolved_labels(operands, mnemonic)
         
-        if has_unresolved_labels(operands):
+        if need_stub:
             stub_size = get_stub_size(mnemonic, operands)
             unresolved = get_unresolved_labels(operands)
-            reloc_text = f"ЗАГЛУШКА {', '.join(unresolved)}"
+            
+            if unresolved:
+                reloc_text = f"ЗАГЛУШКА {', '.join(unresolved)}"
+            else:
+                label_from_op = extract_label_from_operands(operands)
+                if label_from_op:
+                    reloc_text = f"ЗАГЛУШКА {label_from_op}"
+                else:
+                    reloc_text = "ЗАГЛУШКА (неизвестная метка)"
             
             relocations.append({
                 'address': current_address,
                 'size': stub_size,
-                'labels': unresolved,
+                'labels': unresolved if unresolved else [label_from_op] if label_from_op else [],
                 'source': source,
                 'mnemonic': mnemonic
             })
@@ -560,9 +638,9 @@ def process_ast_line(line):
                     
             except Exception as e:
                 print(f"Ошибка кодирования {source}: {e}", file=sys.stderr)
-                labels_list = pending_labels
-                add_byte(0xCC, source, None, f"ОШИБКА: {e}", labels_list)
-                pending_labels = []
+                labels_to_attach = pending_labels.copy()
+                add_byte(0xCC, source, f"ОШИБКА: {e}", labels_to_attach)
+                pending_labels.clear()
                 
                 if sec == '.text':
                     text_buffer.append(0xCC)
@@ -589,113 +667,113 @@ def finalize_headers():
     
     i = 0
     while i < len(entries):
-        segment, addr, byte, target, source, label, source_with_values, calc_target, calc_byte = entries[i]
+        segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte = entries[i]
         
-        # e_entry - 8 байт
         if 'e_entry (stub)' in source:
             new_bytes = [(entry_point_addr >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{entry_point_addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"e_entry = 0x{entry_point_addr:x}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_offset (text) - 8 байт
         elif 'p_offset (text stub)' in source:
             new_bytes = [(text_offset >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_offset (text) = 0x{text_offset:x}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_filesz (text) - 8 байт
         elif 'p_filesz (text stub)' in source:
             new_bytes = [(text_filesz >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_filesz (text) = {text_filesz}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_memsz (text) - 8 байт
         elif 'p_memsz (text stub)' in source:
             new_bytes = [(text_memsz >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_memsz (text) = {text_memsz}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_offset (data) - 8 байт
         elif 'p_offset (data stub)' in source:
             new_bytes = [(data_offset >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_offset (data) = 0x{data_offset:x}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_vaddr (data) - 8 байт
         elif 'p_vaddr (data stub)' in source:
             new_bytes = [(vaddr_data_final >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{vaddr_data_final + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_vaddr (data) = 0x{vaddr_data_final:x}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_paddr (data) - 8 байт
         elif 'p_paddr (data stub)' in source:
             new_bytes = [(vaddr_data_final >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{vaddr_data_final + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_paddr (data) = 0x{vaddr_data_final:x}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_filesz (data) - 8 байт
         elif 'p_filesz (data stub)' in source:
             new_bytes = [(data_filesz >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_filesz (data) = {data_filesz}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
-        # p_memsz (data) - 8 байт
         elif 'p_memsz (data stub)' in source:
             new_bytes = [(data_memsz >> j*8) & 0xFF for j in range(8)]
             for j, nb in enumerate(new_bytes):
-                entries[i + j] = (segment, addr + j, nb, target, 
+                virt = f"0x{addr + j:08x}"
+                byte_hex = f"0x{nb:02x}"
+                entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
                                   f"p_memsz (data) = {data_memsz}", 
                                   label if j == 0 else "", 
-                                  "", "", 
-                                  f"0x{nb:02x}")
+                                  "", "", byte_hex)
             i += 8
             continue
         
@@ -705,19 +783,20 @@ def finalize_headers():
 def save_to_csv(filename: str):
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f, delimiter=';')
-        writer.writerow(['сегмент', 'адрес', 'байт', 'приводящая_метка', 'уводящий_адрес', 
-                         'исходная_команда', 'команда_со_значениями',
+        writer.writerow(['сегмент', 'адрес', 'виртуальный_адрес', 'байт', 'приводящая_метка', 
+                         'уводящий_адрес', 'исходная_команда', 'команда_со_значениями',
                          'рассчитанный_уводящий_адрес', 'рассчитанный_байт'])
         
-        for segment, addr, byte, target, source, label, source_with_values, calc_target, calc_byte in entries:
+        for segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte in entries:
             writer.writerow([
                 segment,
                 f"0x{addr:08x}",
-                f"0x{byte:02x}",
+                virt_addr,
+                byte_str,
                 label,
                 target,
                 source,
-                source_with_values,
+                cmd_with_values,
                 calc_target,
                 calc_byte
             ])
@@ -748,16 +827,16 @@ def main():
     vaddr_data_final = align_up(vaddr_text + len(text_buffer), PAGE_SIZE)
     vaddr_bnd_final = align_up(vaddr_data_final + len(data_buffer), PAGE_SIZE)
     
-    print(f"\n=== Первый проход (однопроходная генерация с заглушками) ===")
-    print(f"  .text: {len(text_buffer)} байт, виртуальный адрес=0x{vaddr_text:x}")
-    print(f"  .data: {len(data_buffer)} байт, виртуальный адрес=0x{vaddr_data_final:x}")
-    print(f"  .bnd:  {bnd_size} байт, виртуальный адрес=0x{vaddr_bnd_final:x}")
+    print(f"\n=== Первый проход ===")
+    print(f"  .text: {len(text_buffer)} байт, vaddr=0x{vaddr_text:x}")
+    print(f"  .data: {len(data_buffer)} байт, vaddr=0x{vaddr_data_final:x}")
+    print(f"  .bnd:  {bnd_size} байт, vaddr=0x{vaddr_bnd_final:x}")
     print(f"  точка входа: {entry_point} = 0x{labels.get(entry_point, vaddr_text):x}")
     print(f"  меток: {len(labels)}")
     print(f"  констант: {len(symbols)}")
     print(f"  релокаций: {len(relocations)}")
-    print(f"  записей в CSV: {len(entries)}")
-    print(f"  CSV сохранен: {csv_file}")
+    print(f"  записей: {len(entries)}")
+    print(f"  CSV: {csv_file}")
 
 
 if __name__ == "__main__":
