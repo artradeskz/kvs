@@ -13,13 +13,17 @@
 
 import sys
 import csv
+import struct  # <--- НОВЫЙ ИМПОРТ
 
 sys.path.insert(0, '.')
-from kvs_data import PAGE_SIZE,ALWAYS_STUB_INSTRUCTIONS, text_vaddr_base, align_up
+from kvs_data import (
+    PAGE_SIZE, text_vaddr_base, align_up,
+    ALWAYS_STUB_INSTRUCTIONS
+)
 from kvs_encoder import encode_instruction
 
 # ========== ГЛОБАЛЬНОЕ СОСТОЯНИЕ ==========
-entries = []  # (segment, address, virt_addr, byte, target, source, label, cmd_with_values, calc_target, calc_byte)
+entries = []
 current_address = 0
 current_segment = '.header'
 last_segment = None
@@ -43,7 +47,6 @@ data_pos = 0
 
 entry_point = "_start"
 relocations = []
-
 
 
 def reset_state():
@@ -107,14 +110,14 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
     entries.append((
         show_segment if show_segment else "",
         current_address,
-        f"0x{virt_addr:08x}",  # виртуальный_адрес
-        f"0x{byte_val:02x}",    # байт (в виде hex-строки)
+        f"0x{virt_addr:08x}",
+        f"0x{byte_val:02x}",
         target if target else "",
         source,
         effective_labels,
-        "",                     # команда_со_значениями (заполняется во втором проходе)
-        "",                     # рассчитанный_уводящий_адрес
-        f"0x{byte_val:02x}"     # рассчитанный_байт (изначально = байт)
+        "",
+        "",
+        f"0x{byte_val:02x}"
     ))
     current_address += 1
     
@@ -127,33 +130,33 @@ def add_bytes(values, source: str = "", target=None):
         add_byte(v, source if i == 0 else "", target if i == 0 else None)
 
 
+# ========== РЕФАКТОРИНГ: ИСПОЛЬЗУЕМ struct.pack ==========
+
 def add_word16(value: int, source: str = "", target=None):
-    add_bytes([
-        (value >> 0) & 0xFF,
-        (value >> 8) & 0xFF,
-    ], source, target)
+    """Добавляет 16-битное значение (little-endian)"""
+    add_bytes(struct.pack('<H', value & 0xFFFF), source, target)
 
 
 def add_word32(value: int, source: str = "", target=None):
-    add_bytes([
-        (value >> 0) & 0xFF,
-        (value >> 8) & 0xFF,
-        (value >> 16) & 0xFF,
-        (value >> 24) & 0xFF,
-    ], source, target)
+    """Добавляет 32-битное значение (little-endian)"""
+    add_bytes(struct.pack('<I', value & 0xFFFFFFFF), source, target)
 
 
 def add_word64(value: int, source: str = "", target=None):
-    add_bytes([
-        (value >> 0) & 0xFF,
-        (value >> 8) & 0xFF,
-        (value >> 16) & 0xFF,
-        (value >> 24) & 0xFF,
-        (value >> 32) & 0xFF,
-        (value >> 40) & 0xFF,
-        (value >> 48) & 0xFF,
-        (value >> 56) & 0xFF,
-    ], source, target)
+    """Добавляет 64-битное значение (little-endian)"""
+    add_bytes(struct.pack('<Q', value & 0xFFFFFFFFFFFFFFFF), source, target)
+
+
+def add_dwords(values: list, source: str = "", target=None):
+    """Добавляет несколько 32-битных значений"""
+    for val in values:
+        add_word32(val, source, target)
+
+
+def add_qwords(values: list, source: str = "", target=None):
+    """Добавляет несколько 64-битных значений"""
+    for val in values:
+        add_word64(val, source, target)
 
 
 def align_to(alignment: int):
@@ -185,6 +188,8 @@ def unescape_string(s):
 
 
 def generate_elf_header():
+    """Генерирует заголовок ELF (64 байта)"""
+    # ELF magic
     add_bytes([0x7F, 0x45, 0x4C, 0x46], "ELF magic")
     add_byte(2, "ELFCLASS64")
     add_byte(1, "ELFDATA2LSB")
@@ -192,15 +197,25 @@ def generate_elf_header():
     add_byte(0, "OS ABI")
     add_byte(0, "ABI version")
     add_bytes([0] * 7, "Padding")
+    
+    # e_type, e_machine, e_version
     add_word16(2, "e_type = ET_EXEC")
     add_word16(62, "e_machine = EM_X86_64")
     add_word32(1, "e_version")
+    
+    # e_entry (stub - будет заполнен позже)
     add_word64(0, "e_entry (stub)")
+    
+    # e_phoff, e_shoff
     add_word64(64, "e_phoff")
     add_word64(0, "e_shoff = 0")
+    
+    # e_flags, e_ehsize, e_phentsize
     add_word32(0, "e_flags")
     add_word16(64, "e_ehsize")
     add_word16(56, "e_phentsize")
+    
+    # e_phnum, e_shentsize, e_shnum, e_shstrndx
     add_word16(2, "e_phnum = 2")
     add_word16(0, "e_shentsize = 0")
     add_word16(0, "e_shnum = 0")
@@ -208,22 +223,25 @@ def generate_elf_header():
 
 
 def generate_program_headers():
+    """Генерирует два программных заголовка (PT_LOAD)"""
+    # === Первый заголовок: TEXT (RX) ===
     add_word32(1, "p_type = PT_LOAD")
     add_word32(5, "p_flags = RX")
-    add_word64(0, "p_offset (text stub)")
+    add_word64(0, "p_offset (text stub)")      # будет заполнено позже
     add_word64(vaddr_text, "p_vaddr (text)")
     add_word64(vaddr_text, "p_paddr (text)")
-    add_word64(0, "p_filesz (text stub)")
-    add_word64(0, "p_memsz (text stub)")
+    add_word64(0, "p_filesz (text stub)")      # будет заполнено позже
+    add_word64(0, "p_memsz (text stub)")       # будет заполнено позже
     add_word64(PAGE_SIZE, "p_align")
     
+    # === Второй заголовок: DATA (RW) ===
     add_word32(1, "p_type = PT_LOAD")
     add_word32(6, "p_flags = RW")
-    add_word64(0, "p_offset (data stub)")
-    add_word64(0, "p_vaddr (data stub)")
-    add_word64(0, "p_paddr (data stub)")
-    add_word64(0, "p_filesz (data stub)")
-    add_word64(0, "p_memsz (data stub)")
+    add_word64(0, "p_offset (data stub)")      # будет заполнено позже
+    add_word64(0, "p_vaddr (data stub)")       # будет заполнено позже
+    add_word64(0, "p_paddr (data stub)")       # будет заполнено позже
+    add_word64(0, "p_filesz (data stub)")      # будет заполнено позже
+    add_word64(0, "p_memsz (data stub)")       # будет заполнено позже
     add_word64(PAGE_SIZE, "p_align")
 
 
@@ -643,7 +661,8 @@ def finalize_headers():
         segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte = entries[i]
         
         if 'e_entry (stub)' in source:
-            new_bytes = [(entry_point_addr >> j*8) & 0xFF for j in range(8)]
+            # Вставляем 8 байт (uint64_t)
+            new_bytes = struct.pack('<Q', entry_point_addr)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{entry_point_addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -655,7 +674,7 @@ def finalize_headers():
             continue
         
         elif 'p_offset (text stub)' in source:
-            new_bytes = [(text_offset >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', text_offset)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -667,7 +686,7 @@ def finalize_headers():
             continue
         
         elif 'p_filesz (text stub)' in source:
-            new_bytes = [(text_filesz >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', text_filesz)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -679,7 +698,7 @@ def finalize_headers():
             continue
         
         elif 'p_memsz (text stub)' in source:
-            new_bytes = [(text_memsz >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', text_memsz)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -691,7 +710,7 @@ def finalize_headers():
             continue
         
         elif 'p_offset (data stub)' in source:
-            new_bytes = [(data_offset >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', data_offset)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -703,7 +722,7 @@ def finalize_headers():
             continue
         
         elif 'p_vaddr (data stub)' in source:
-            new_bytes = [(vaddr_data_final >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', vaddr_data_final)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{vaddr_data_final + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -715,7 +734,7 @@ def finalize_headers():
             continue
         
         elif 'p_paddr (data stub)' in source:
-            new_bytes = [(vaddr_data_final >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', vaddr_data_final)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{vaddr_data_final + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -727,7 +746,7 @@ def finalize_headers():
             continue
         
         elif 'p_filesz (data stub)' in source:
-            new_bytes = [(data_filesz >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', data_filesz)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
@@ -739,7 +758,7 @@ def finalize_headers():
             continue
         
         elif 'p_memsz (data stub)' in source:
-            new_bytes = [(data_memsz >> j*8) & 0xFF for j in range(8)]
+            new_bytes = struct.pack('<Q', data_memsz)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
