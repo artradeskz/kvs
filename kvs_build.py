@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
+"""kvs_build.py
 Главный сборочный скрипт КВС
 Последовательно запускает все этапы компиляции
 """
@@ -23,17 +23,18 @@ if __name__ == "__main__":
     
     tokens_file = base_name + ".токены"
     ast_file = base_name + ".аст"
-    pass1_file = base_name + ".проход1"
     csv_file = base_name + ".csv"
     elf_file = base_name + ".elf"
     
     stages = [
         ("kvs_lexer.py", [source_file, tokens_file], "Лексический анализ"),
         ("kvs_parser.py", [tokens_file, ast_file], "Парсинг"),
-        ("kvs_pass1.py", [ast_file, pass1_file], "Первый проход"),
-        ("kvs_pass2.py", [ast_file, pass1_file, csv_file], "Второй проход и генерация CSV"),
-        ("kvs_verify.py", [pass1_file, csv_file], "Проверка размеров инструкций"),
-        ("kvs_builder.py", [csv_file, pass1_file, elf_file], "Сборка ELF"),
+        ("kvs_pass1.py", [ast_file, csv_file], "Первый проход: генерация кода и CSV"),
+        ("kvs_pass2.py", [csv_file], "2 проход"),
+        ("kvs_pass3.py", [ast_file, csv_file], "3 проход"),
+        ("kvs_pass4.py", [csv_file], "4 проход"),
+        #("kvs_pass2.py", [csv_file], "Второй проход: разрешение меток"),
+        ("kvs_builder.py", [csv_file, elf_file], "Сборка ELF"),
     ]
     
     for script, args, description in stages:
@@ -48,10 +49,9 @@ if __name__ == "__main__":
                 print(result.stdout)
             sys.exit(1)
         
-        # Для верификатора показываем stdout (там детали проверки)
         if result.stdout:
             print(result.stdout)
     
-    print(f"\n=== Компиляция успешно завершена ===")
-    print(f"Исполняемый файл: {elf_file}")
-    print(f"Запустить: ./{elf_file}")
+    #print(f"\n=== Компиляция успешно завершена ===")
+    #print(f"Исполняемый файл: {elf_file}")
+    #print(f"Запустить: ./{elf_file}")
