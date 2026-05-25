@@ -53,7 +53,7 @@ def parse_command(cmd_str):
     return mnemonic, operands
 
 
-def detect_section_addresses(entries, headers):
+def detect_section_addresses(entries, headers, log_file):
     """
     Определяет виртуальные адреса секций из CSV.
     """
@@ -82,17 +82,17 @@ def detect_section_addresses(entries, headers):
         if segment == '.text' and not found_text:
             vaddr_text = virt_addr
             found_text = True
-            print(f"  .text: 0x{vaddr_text:x}")
+            log_file.write(f"  .text: 0x{vaddr_text:x}\n")
         
         elif segment == '.data' and not found_data:
             vaddr_data = virt_addr
             found_data = True
-            print(f"  .data: 0x{vaddr_data:x}")
+            log_file.write(f"  .data: 0x{vaddr_data:x}\n")
         
         elif segment == '.bss' and not found_bnd:
             vaddr_bnd = virt_addr
             found_bnd = True
-            print(f"  .bss: 0x{vaddr_bnd:x}")
+            log_file.write(f"  .bss: 0x{vaddr_bnd:x}\n")
     
     # Проверяем, что все нужные секции найдены
     if not found_text:
@@ -100,11 +100,11 @@ def detect_section_addresses(entries, headers):
         sys.exit(1)
     
     if not found_data:
-        print("  Предупреждение: секция .data не найдена в CSV")
+        log_file.write("  Предупреждение: секция .data не найдена в CSV, используем 0x402000\n")
         vaddr_data = 0x402000  # fallback
 
 
-def collect_labels_from_csv(entries, headers):
+def collect_labels_from_csv(entries, headers, log_file):
     """
     Собирает метки из CSV, используя колонку 'виртуальный_адрес'
     """
@@ -129,29 +129,11 @@ def collect_labels_from_csv(entries, headers):
                     if label_name:
                         labels[label_name] = virt_addr
                         label_sections[label_name] = ''
-
-
-def get_section_for_address(virt_addr):
-    """
-    Определяет секцию по виртуальному адресу
-    """
-    if vaddr_text is not None and virt_addr >= vaddr_text:
-        # Простая эвристика: если адрес в диапазоне .text (первые 0x1000 байт)
-        if virt_addr < vaddr_text + PAGE_SIZE:
-            return '.text'
     
-    if vaddr_data is not None and virt_addr >= vaddr_data:
-        if virt_addr < vaddr_data + PAGE_SIZE:
-            return '.data'
-    
-    if vaddr_bnd is not None and virt_addr >= vaddr_bnd:
-        if virt_addr < vaddr_bnd + PAGE_SIZE:
-            return '.bss'
-    
-    return '.unknown'
+    log_file.write(f"Найдено меток: {len(labels)}\n")
 
 
-def reencode_instructions(entries, headers):
+def reencode_instructions(entries, headers, log_file):
     try:
         source_with_values_idx = headers.index('команда_со_значениями')
         calc_byte_idx = headers.index('рассчитанный_байт')
@@ -189,30 +171,12 @@ def reencode_instructions(entries, headers):
             try:
                 mnemonic, operands = parse_command(cmd)
                 if mnemonic:
-                    # ОТЛАДОЧНЫЙ ВЫВОД (только для переходов)
-                    if mnemonic.startswith('короткий_переход') or mnemonic.startswith('переход'):
-                        print(f"\n=== ОТЛАДКА ===")
-                        print(f"  Адрес в CSV: 0x{file_addr:08x}")
-                        print(f"  Виртуальный адрес инструкции: 0x{instr_virt_addr:08x}")
-                        print(f"  Команда: {cmd}")
-                        print(f"  Мнемоника: {mnemonic}")
-                        print(f"  Операнды: {operands}")
-                        
-                        if operands and len(operands) > 0:
-                            target_str = operands[0]
-                            if target_str.startswith('0x'):
-                                target_addr = int(target_str, 16)
-                                # Определяем размер инструкции
-                                if mnemonic.startswith('короткий'):
-                                    instr_size = 2
-                                else:
-                                    instr_size = 5
-                                offset = target_addr - (instr_virt_addr + instr_size)
-                                print(f"  Целевой адрес: 0x{target_addr:08x}")
-                                print(f"  Размер инструкции: {instr_size}")
-                                print(f"  RIP = 0x{instr_virt_addr + instr_size:08x}")
-                                print(f"  Смещение = {offset} (0x{offset & 0xFFFFFFFF:08x})")
-                                print(f"  В диапазоне [-128..127]: {-128 <= offset <= 127}")
+                    # Для отладки: записываем в лог все инструкции переместить_имм
+                    if mnemonic == 'переместить_имм' and operands and '0x00403014' in cmd:
+                        log_file.write(f"\nDEBUG MOV:\n")
+                        log_file.write(f"  Адрес в CSV: 0x{file_addr:08x}\n")
+                        log_file.write(f"  Команда: {cmd}\n")
+                        log_file.write(f"  Операнды: {operands}\n")
                     
                     # Вычисляем current_pos как смещение в секции
                     section = row[segment_idx].strip()
@@ -224,7 +188,7 @@ def reencode_instructions(entries, headers):
                     elif section == '.bss':
                         current_pos = instr_virt_addr - vaddr_bnd if vaddr_bnd else 0
                     else:
-                        # Fallback: определяем по диапазону адресов
+                        # Fallback: определяем по диапазону адресов - ФУФЛО, УБРАТЬ
                         if vaddr_text and 0x401000 <= instr_virt_addr < 0x402000:
                             current_pos = instr_virt_addr - vaddr_text
                         elif vaddr_data and 0x402000 <= instr_virt_addr < 0x403000:
@@ -238,9 +202,10 @@ def reencode_instructions(entries, headers):
                         current_pos, vaddr_bnd if vaddr_bnd else 0
                     )
                     
-                    if mnemonic.startswith('короткий_переход') or mnemonic.startswith('переход'):
-                        print(f"  Закодировано: {[f'0x{b:02x}' for b in encoded]}")
-                        print(f"  РЕЗУЛЬТАТ: УСПЕШНО")
+                    # Для отладки: записываем результат
+                    if mnemonic == 'переместить_имм' and operands and '0x00403014' in cmd:
+                        log_file.write(f"  Закодировано: {[f'0x{b:02x}' for b in encoded]}\n")
+                        log_file.write(f"  Длина: {len(encoded)} байт\n")
                     
                     for j, byte in enumerate(encoded):
                         if i + j < len(entries):
@@ -251,12 +216,10 @@ def reencode_instructions(entries, headers):
                     continue
                     
             except Exception as e:
-                print(f"\n=== ОТЛАДКА (ОШИБКА) ===")
-                print(f"  Команда: {cmd}")
-                print(f"  Мнемоника: {mnemonic if 'mnemonic' in locals() else '?'}")
-                print(f"  Операнды: {operands if 'operands' in locals() else '?'}")
-                print(f"  Виртуальный адрес инструкции: 0x{instr_virt_addr:08x}")
-                print(f"  ОШИБКА: {e}")
+                log_file.write(f"\n=== ОШИБКА ===\n")
+                log_file.write(f"  Команда: {cmd}\n")
+                log_file.write(f"  Мнемоника: {mnemonic if 'mnemonic' in locals() else '?'}\n")
+                log_file.write(f"  Ошибка: {e}\n")
                 error_count += 1
                 row[calc_byte_idx] = "0xcc"
                 i += 1
@@ -293,34 +256,36 @@ def main():
         sys.exit(1)
     
     csv_file = sys.argv[1]
+    log_file_name = csv_file.replace('.csv', '_pass4.log')
     
     print(f"\n=== Четвёртый проход КВС ===")
     print(f"Чтение CSV: {csv_file}")
     
-    headers, entries = read_csv(csv_file)
-    
-    print(f"\n--- Определение адресов секций из CSV ---")
-    detect_section_addresses(entries, headers)
-    
-    print(f"\n--- Сбор меток из CSV ---")
-    collect_labels_from_csv(entries, headers)
-    print(f"Найдено меток: {len(labels)}")
-    
-    if labels:
-        print(f"\n--- Примеры меток (виртуальные адреса) ---")
-        for i, name in enumerate(sorted(labels.keys())[:10]):
-            print(f"    {name} -> 0x{labels[name]:08x}")
-        if len(labels) > 10:
-            print(f"    ... и ещё {len(labels) - 10}")
-    
-    print(f"\n--- Перекодирование инструкций ---")
-    reencoded_count, error_count = reencode_instructions(entries, headers)
+    with open(log_file_name, 'w', encoding='utf-8') as log_file:
+        log_file.write(f"=== Четвёртый проход КВС ===\n")
+        log_file.write(f"CSV: {csv_file}\n\n")
+        
+        headers, entries = read_csv(csv_file)
+        
+        log_file.write(f"--- Определение адресов секций из CSV ---\n")
+        detect_section_addresses(entries, headers, log_file)
+        
+        log_file.write(f"\n--- Сбор меток из CSV ---\n")
+        collect_labels_from_csv(entries, headers, log_file)
+        
+        log_file.write(f"\n--- Перекодирование инструкций ---\n")
+        reencoded_count, error_count = reencode_instructions(entries, headers, log_file)
+        
+        log_file.write(f"\n--- Статистика ---\n")
+        log_file.write(f"  Меток в словаре: {len(labels)}\n")
+        log_file.write(f"  Перекодировано инструкций: {reencoded_count}\n")
+        log_file.write(f"  Ошибок: {error_count}\n")
     
     print_statistics(reencoded_count, error_count, len(labels))
     
     save_csv(csv_file, headers, entries)
     print(f"\nCSV сохранён: {csv_file}")
-    print(f"Колонка 'рассчитанный_байт' обновлена")
+    print(f"Лог сохранён: {log_file_name}")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ last_segment = None
 vaddr_text = text_vaddr_base
 vaddr_data = None
 vaddr_bnd = None
+data_offset = 0x2000  # начальное значение, будет пересчитано в finalize_headers
 
 text_buffer = bytearray()
 data_buffer = bytearray()
@@ -64,6 +65,7 @@ def reset_state():
     bnd_size = 0
     vaddr_data = None
     vaddr_bnd = None
+    data_offset = 0x2000  # добавить
     labels = {}
     label_sections = {}
     symbols = {}
@@ -81,12 +83,14 @@ def set_segment(segment: str):
 
 def get_virtual_address():
     """Возвращает виртуальный адрес для текущей позиции"""
+    global data_offset  # добавить
+    
     if current_segment == '.text':
         return vaddr_text + (current_address - 0x1000)
     elif current_segment == '.data':
         if vaddr_data is None:
             return current_address
-        return vaddr_data + (current_address - 0x2000)
+        return vaddr_data + (current_address - data_offset)
     else:
         return current_address
 
@@ -100,7 +104,7 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
     elif pending_labels:
         effective_labels = ','.join(pending_labels)
     
-    show_segment = current_segment if current_segment != last_segment else None
+    show_segment = current_segment# if current_segment != last_segment else None
     if show_segment:
         last_segment = current_segment
     
@@ -462,6 +466,11 @@ def process_ast_line(line):
         elif directive == '.данные':
             set_segment('.data')
             align_to(PAGE_SIZE)
+            # Пересчитываем data_offset, так как .text уже полностью обработан
+            global data_offset
+            data_offset = align_up(0x1000 + text_pos, PAGE_SIZE)
+            # Для отладки (можно убрать)
+            print(f"  .data: пересчитан data_offset = 0x{data_offset:x} (text_pos={text_pos})")
         
         elif directive == '.бнд':
             set_segment('.bss')
@@ -642,13 +651,14 @@ def process_ast_line(line):
 
 
 def finalize_headers():
-    global entries
+    global entries, data_offset  # добавить data_offset в global
     
     text_offset = 0x1000
-    data_offset = 0x2000
-    
     text_filesz = len(text_buffer)
     text_memsz = len(text_buffer)
+    
+    # ВЫЧИСЛЯЕМ ФАЙЛОВОЕ СМЕЩЕНИЕ ДЛЯ DATA ДИНАМИЧЕСКИ
+    data_offset = align_up(text_offset + text_filesz, PAGE_SIZE)
     
     data_filesz = len(data_buffer)
     data_memsz = len(data_buffer) + bnd_size
@@ -794,6 +804,37 @@ def save_to_csv(filename: str):
             ])
 
 
+
+def print_section_info():
+    """Выводит информацию о секциях с учётом выравнивания"""
+    text_start_offset = 0x1000
+    text_end_offset = text_start_offset + len(text_buffer)
+    text_end_aligned = align_up(text_end_offset, PAGE_SIZE)
+    
+    data_start_offset = text_end_aligned
+    data_end_offset = data_start_offset + len(data_buffer)
+    data_end_aligned = align_up(data_end_offset, PAGE_SIZE)
+    
+    bnd_start_offset = data_end_aligned
+    bnd_end_offset = bnd_start_offset + bnd_size
+    
+    print(f"\n=== Информация о размещении секций (файловые смещения) ===")
+    print(f"  .text: {len(text_buffer)} байт, смещение 0x{text_start_offset:x} - 0x{text_end_offset-1:x}")
+    print(f"         выровнено: следующий сектор начнётся с 0x{text_end_aligned:x}")
+    print(f"  .data: {len(data_buffer)} байт, смещение 0x{data_start_offset:x} - 0x{data_end_offset-1:x}")
+    print(f"         выровнено: следующий сектор начнётся с 0x{data_end_aligned:x}")
+    if bnd_size > 0:
+        print(f"  .bnd:  {bnd_size} байт, смещение 0x{bnd_start_offset:x} - 0x{bnd_end_offset-1:x}")
+    
+    print(f"\n=== Виртуальные адреса ===")
+    print(f"  .text: 0x{vaddr_text:x} - 0x{vaddr_text + len(text_buffer) - 1:x}")
+    data_vaddr = align_up(vaddr_text + len(text_buffer), PAGE_SIZE)
+    print(f"  .data: 0x{data_vaddr:x} - 0x{data_vaddr + len(data_buffer) - 1:x}")
+    if bnd_size > 0:
+        bnd_vaddr = align_up(data_vaddr + len(data_buffer), PAGE_SIZE)
+        print(f"  .bnd:  0x{bnd_vaddr:x} - 0x{bnd_vaddr + bnd_size - 1:x}")
+
+
 def main():
     if len(sys.argv) != 3:
         print("Использование: python kvs_pass1.py <вход.аст> <выход.csv>")
@@ -815,13 +856,15 @@ def main():
     
     finalize_headers()
     save_to_csv(csv_file)
+        # Добавить эту строку:
+    print_section_info()
     
     vaddr_data_final = align_up(vaddr_text + len(text_buffer), PAGE_SIZE)
     vaddr_bnd_final = align_up(vaddr_data_final + len(data_buffer), PAGE_SIZE)
     
     print(f"\n=== Первый проход ===")
     print(f"  .text: {len(text_buffer)} байт, vaddr=0x{vaddr_text:x}")
-    print(f"  .data: {len(data_buffer)} байт, vaddr=0x{vaddr_data_final:x}")
+    print(f"  .data: {len(data_buffer)} байт, vaddr=0x{vaddr_data_final:x}, offset=0x{align_up(0x1000 + len(text_buffer), PAGE_SIZE):x}")
     print(f"  .bnd:  {bnd_size} байт, vaddr=0x{vaddr_bnd_final:x}")
     print(f"  точка входа: {entry_point} = 0x{labels.get(entry_point, vaddr_text):x}")
     print(f"  меток: {len(labels)}")
