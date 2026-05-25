@@ -13,7 +13,7 @@
 
 import sys
 import csv
-import struct
+import struct  # <--- НОВЫЙ ИМПОРТ
 
 sys.path.insert(0, '.')
 from kvs_data import (
@@ -31,11 +31,11 @@ last_segment = None
 vaddr_text = text_vaddr_base
 vaddr_data = None
 vaddr_bnd = None
-data_offset = 0x2000
+data_offset = 0x2000  # начальное значение, будет пересчитано в finalize_headers
 
 text_buffer = bytearray()
 data_buffer = bytearray()
-bss_size = 0
+bnd_size = 0
 
 labels = {}
 label_sections = {}
@@ -52,8 +52,7 @@ relocations = []
 
 def reset_state():
     global entries, current_address, current_segment, last_segment
-    global text_buffer, data_buffer, bss_size
-    global vaddr_data, vaddr_bnd
+    global text_buffer, data_buffer, bnd_size, vaddr_data, vaddr_bnd
     global labels, label_sections, symbols, text_pos, data_pos, entry_point, relocations
     global pending_labels
     
@@ -63,10 +62,10 @@ def reset_state():
     last_segment = None
     text_buffer = bytearray()
     data_buffer = bytearray()
-    bss_size = 0
+    bnd_size = 0
     vaddr_data = None
     vaddr_bnd = None
-    data_offset = 0x2000
+    data_offset = 0x2000  # добавить
     labels = {}
     label_sections = {}
     symbols = {}
@@ -84,7 +83,7 @@ def set_segment(segment: str):
 
 def get_virtual_address():
     """Возвращает виртуальный адрес для текущей позиции"""
-    global data_offset
+    global data_offset  # добавить
     
     if current_segment == '.text':
         return vaddr_text + (current_address - 0x1000)
@@ -105,7 +104,7 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
     elif pending_labels:
         effective_labels = ','.join(pending_labels)
     
-    show_segment = current_segment
+    show_segment = current_segment# if current_segment != last_segment else None
     if show_segment:
         last_segment = current_segment
     
@@ -130,59 +129,36 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
         pending_labels = []
 
 
-def add_bss_entry(size: int, label: str = None):
-    """Добавляет запись для BSS в CSV (БЕЗ увеличения файлового адреса)"""
-    global bss_size, vaddr_bnd
-    
-    bss_start = bss_size
-    bss_size += size
-    
-    bss_file_addr = "BSS"
-    
-    for offset in range(size):
-        virt_addr = vaddr_bnd + bss_start + offset
-        label_name = label if offset == 0 and label else ""
-        
-        # ПОРЯДОК ПОЛЕЙ ДОЛЖЕН СООТВЕТСТВОВАТЬ РАСПАКОВКЕ В save_to_csv:
-        # segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte
-        entries.append((
-            ".bss",                           # segment
-            bss_file_addr,                    # addr
-            f"0x{virt_addr:08x}",             # virt_addr
-            "0x00",                           # byte_str
-            "",                               # target (уводящий_адрес) - пусто
-            f".резб {size}" if offset == 0 else "",  # source (исходная_команда)
-            label_name,                       # label (приводящая_метка) ← сюда имя метки!
-            "",                               # cmd_with_values
-            "",                               # calc_target
-            "0x00"                            # calc_byte
-        ))
-        
-
-
 def add_bytes(values, source: str = "", target=None):
     for i, v in enumerate(values):
         add_byte(v, source if i == 0 else "", target if i == 0 else None)
 
 
+# ========== РЕФАКТОРИНГ: ИСПОЛЬЗУЕМ struct.pack ==========
+
 def add_word16(value: int, source: str = "", target=None):
+    """Добавляет 16-битное значение (little-endian)"""
     add_bytes(struct.pack('<H', value & 0xFFFF), source, target)
 
 
 def add_word32(value: int, source: str = "", target=None):
+    """Добавляет 32-битное значение (little-endian)"""
     add_bytes(struct.pack('<I', value & 0xFFFFFFFF), source, target)
 
 
 def add_word64(value: int, source: str = "", target=None):
+    """Добавляет 64-битное значение (little-endian)"""
     add_bytes(struct.pack('<Q', value & 0xFFFFFFFFFFFFFFFF), source, target)
 
 
 def add_dwords(values: list, source: str = "", target=None):
+    """Добавляет несколько 32-битных значений"""
     for val in values:
         add_word32(val, source, target)
 
 
 def add_qwords(values: list, source: str = "", target=None):
+    """Добавляет несколько 64-битных значений"""
     for val in values:
         add_word64(val, source, target)
 
@@ -216,6 +192,8 @@ def unescape_string(s):
 
 
 def generate_elf_header():
+    """Генерирует заголовок ELF (64 байта)"""
+    # ELF magic
     add_bytes([0x7F, 0x45, 0x4C, 0x46], "ELF magic")
     add_byte(2, "ELFCLASS64")
     add_byte(1, "ELFDATA2LSB")
@@ -224,19 +202,24 @@ def generate_elf_header():
     add_byte(0, "ABI version")
     add_bytes([0] * 7, "Padding")
     
+    # e_type, e_machine, e_version
     add_word16(2, "e_type = ET_EXEC")
     add_word16(62, "e_machine = EM_X86_64")
     add_word32(1, "e_version")
     
+    # e_entry (stub - будет заполнен позже)
     add_word64(0, "e_entry (stub)")
     
+    # e_phoff, e_shoff
     add_word64(64, "e_phoff")
     add_word64(0, "e_shoff = 0")
     
+    # e_flags, e_ehsize, e_phentsize
     add_word32(0, "e_flags")
     add_word16(64, "e_ehsize")
     add_word16(56, "e_phentsize")
     
+    # e_phnum, e_shentsize, e_shnum, e_shstrndx
     add_word16(2, "e_phnum = 2")
     add_word16(0, "e_shentsize = 0")
     add_word16(0, "e_shnum = 0")
@@ -244,22 +227,25 @@ def generate_elf_header():
 
 
 def generate_program_headers():
+    """Генерирует два программных заголовка (PT_LOAD)"""
+    # === Первый заголовок: TEXT (RX) ===
     add_word32(1, "p_type = PT_LOAD")
     add_word32(5, "p_flags = RX")
-    add_word64(0, "p_offset (text stub)")
+    add_word64(0, "p_offset (text stub)")      # будет заполнено позже
     add_word64(vaddr_text, "p_vaddr (text)")
     add_word64(vaddr_text, "p_paddr (text)")
-    add_word64(0, "p_filesz (text stub)")
-    add_word64(0, "p_memsz (text stub)")
+    add_word64(0, "p_filesz (text stub)")      # будет заполнено позже
+    add_word64(0, "p_memsz (text stub)")       # будет заполнено позже
     add_word64(PAGE_SIZE, "p_align")
     
+    # === Второй заголовок: DATA (RW) ===
     add_word32(1, "p_type = PT_LOAD")
     add_word32(6, "p_flags = RW")
-    add_word64(0, "p_offset (data stub)")
-    add_word64(0, "p_vaddr (data stub)")
-    add_word64(0, "p_paddr (data stub)")
-    add_word64(0, "p_filesz (data stub)")
-    add_word64(0, "p_memsz (data stub)")
+    add_word64(0, "p_offset (data stub)")      # будет заполнено позже
+    add_word64(0, "p_vaddr (data stub)")       # будет заполнено позже
+    add_word64(0, "p_paddr (data stub)")       # будет заполнено позже
+    add_word64(0, "p_filesz (data stub)")      # будет заполнено позже
+    add_word64(0, "p_memsz (data stub)")       # будет заполнено позже
     add_word64(PAGE_SIZE, "p_align")
 
 
@@ -370,24 +356,30 @@ def get_stub_size(mnemonic, operands):
 
 
 def extract_label_from_operands(operands):
+    """Извлекает первую метку из операндов инструкции"""
     for op in operands:
         if not op:
             continue
+        # Пропускаем регистры
         if op in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай',
                   'еаикс', 'ебикс', 'есикс', 'едикс',
                   'аикс', 'бикс', 'сикс', 'дикс',
                   'ал', 'бл', 'кл', 'дл',
                   'р8', 'р9', 'р10', 'р11', 'р12', 'р13', 'р14', 'р15'):
             continue
+        # Пропускаем числа
         if op.isdigit() or (op.startswith('0x') and len(op) > 2):
             continue
+        # Пропускаем косвенную адресацию через регистр
         if op.startswith('MEM:reg_indirect:'):
             continue
+        # Извлекаем метку из [метка]
         if op.startswith('[') and op.endswith(']'):
             inner = op[1:-1]
             if inner not in ('раикс', 'рбикс', 'рсикс', 'рдикс', 'рсипи', 'рбипи', 'рсиай', 'рдиай'):
                 if not inner.isdigit() and not inner.startswith('0x'):
                     return inner
+        # Обычная метка
         elif op not in symbols:
             return op
     return None
@@ -460,7 +452,7 @@ def get_unresolved_labels(operands):
 
 
 def process_ast_line(line):
-    global text_pos, data_pos, vaddr_data, vaddr_bnd, bss_size
+    global text_pos, data_pos, vaddr_data, vaddr_bnd, bnd_size
     global text_buffer, data_buffer, entry_point, symbols, pending_labels
     
     line_type, fields = parse_ast_line(line)
@@ -474,16 +466,14 @@ def process_ast_line(line):
         elif directive == '.данные':
             set_segment('.data')
             align_to(PAGE_SIZE)
+            # Пересчитываем data_offset, так как .text уже полностью обработан
             global data_offset
             data_offset = align_up(0x1000 + text_pos, PAGE_SIZE)
+            # Для отладки (можно убрать)
             print(f"  .data: пересчитан data_offset = 0x{data_offset:x} (text_pos={text_pos})")
         
         elif directive == '.бнд':
             set_segment('.bss')
-            # Инициализируем vaddr_bnd когда входим в BSS
-            if vaddr_bnd is None:
-                data_vaddr = vaddr_data if vaddr_data else align_up(vaddr_text + text_pos, PAGE_SIZE)
-                vaddr_bnd = align_up(data_vaddr + data_pos, PAGE_SIZE)
         
         elif directive == '.глобал':
             entry_point = fields.get('label', '_start')
@@ -540,14 +530,7 @@ def process_ast_line(line):
         elif directive in ('.резб', '.резс', '.рездс', '.резкс'):
             count = int(fields.get('count', '0'))
             multiplier = {'резб': 1, 'резс': 2, 'рездс': 4, 'резкс': 8}
-            size = count * multiplier.get(directive, 1)
-            
-            # Добавляем BSS в CSV
-            label_name = pending_labels[0] if pending_labels else None
-            add_bss_entry(size, label_name)
-            
-            if label_name and pending_labels:
-                pending_labels = []
+            bnd_size += count * multiplier.get(directive, 1)
     
     elif line_type == "LABEL":
         label_name = fields.get('name', '')
@@ -571,9 +554,8 @@ def process_ast_line(line):
         
         elif sec == '.бнд':
             if vaddr_bnd is None:
-                data_vaddr = vaddr_data if vaddr_data else align_up(vaddr_text + text_pos, PAGE_SIZE)
-                vaddr_bnd = align_up(data_vaddr + data_pos, PAGE_SIZE)
-            addr = vaddr_bnd + bss_size
+                vaddr_bnd = align_up(vaddr_data + data_pos, PAGE_SIZE)
+            addr = vaddr_bnd + bnd_size
             labels[label_name] = addr
             label_sections[label_name] = sec
             if label_name not in pending_labels:
@@ -669,62 +651,27 @@ def process_ast_line(line):
 
 
 def finalize_headers():
-    global entries, data_offset, vaddr_data, vaddr_bnd
-    
-    print("\n[DEBUG finalize_headers] Начало")
+    global entries, data_offset  # добавить data_offset в global
     
     text_offset = 0x1000
     text_filesz = len(text_buffer)
     text_memsz = len(text_buffer)
     
-    # Выравнивание для начала секции данных
+    # ВЫЧИСЛЯЕМ ФАЙЛОВОЕ СМЕЩЕНИЕ ДЛЯ DATA ДИНАМИЧЕСКИ
     data_offset = align_up(text_offset + text_filesz, PAGE_SIZE)
-    print(f"[DEBUG] text_filesz={text_filesz}, data_offset=0x{data_offset:x}")
     
     data_filesz = len(data_buffer)
+    data_memsz = len(data_buffer) + bnd_size
     
-    # Вычисляем виртуальные адреса с учётом выравнивания на PAGE_SIZE
-    vaddr_data_start = align_up(vaddr_text + text_filesz, PAGE_SIZE)
-    vaddr_bss_start = align_up(vaddr_data_start + data_filesz, PAGE_SIZE)
-    
-    # Сохраняем в глобальные переменные
-    vaddr_data = vaddr_data_start
-    vaddr_bnd = vaddr_bss_start
-    
-    # memsz должен покрывать всё: от начала .data до конца .bss
-    # Важно: включаем выравнивание между .data и .bss!
-    data_memsz = (vaddr_bss_start + bss_size) - vaddr_data_start
-    
-    print(f"[DEBUG] vaddr_data_start=0x{vaddr_data_start:x}")
-    print(f"[DEBUG] vaddr_bss_start=0x{vaddr_bss_start:x}")
-    print(f"[DEBUG] data_filesz={data_filesz}, bss_size={bss_size}")
-    print(f"[DEBUG] data_memsz={data_memsz} (файл: {data_filesz}, память: {data_memsz})")
-    
-    # Обновляем виртуальные адреса для BSS записей в CSV
-    for i, entry in enumerate(entries):
-        if entry[0] == ".bss" and entry[1] == "BSS":
-            old_virt = int(entry[2], 16)
-            # Вычисляем смещение внутри BSS
-            bss_offset = old_virt - vaddr_bss_start if vaddr_bss_start else 0
-            new_virt = vaddr_bss_start + bss_offset
-            entries[i] = (entry[0], entry[1], f"0x{new_virt:08x}", entry[3], 
-                         entry[4], entry[5], entry[6], entry[7], entry[8], entry[9])
-            print(f"[DEBUG] BSS запись: virt 0x{old_virt:x} -> 0x{new_virt:x}")
-    
+    vaddr_data_final = align_up(vaddr_text + text_filesz, PAGE_SIZE)
     entry_point_addr = labels.get(entry_point, vaddr_text)
-    print(f"[DEBUG] entry_point_addr=0x{entry_point_addr:x}")
     
     i = 0
     while i < len(entries):
         segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte = entries[i]
         
-        # Пропускаем BSS-записи (они уже обработаны выше)
-        if segment == ".bss":
-            i += 1
-            continue
-        
-        # Заполнение точки входа
         if 'e_entry (stub)' in source:
+            # Вставляем 8 байт (uint64_t)
             new_bytes = struct.pack('<Q', entry_point_addr)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{entry_point_addr + j:08x}"
@@ -736,7 +683,6 @@ def finalize_headers():
             i += 8
             continue
         
-        # Заполнение смещения текстовой секции
         elif 'p_offset (text stub)' in source:
             new_bytes = struct.pack('<Q', text_offset)
             for j, nb in enumerate(new_bytes):
@@ -749,7 +695,6 @@ def finalize_headers():
             i += 8
             continue
         
-        # Заполнение размера текстовой секции в файле
         elif 'p_filesz (text stub)' in source:
             new_bytes = struct.pack('<Q', text_filesz)
             for j, nb in enumerate(new_bytes):
@@ -762,7 +707,6 @@ def finalize_headers():
             i += 8
             continue
         
-        # Заполнение размера текстовой секции в памяти
         elif 'p_memsz (text stub)' in source:
             new_bytes = struct.pack('<Q', text_memsz)
             for j, nb in enumerate(new_bytes):
@@ -775,7 +719,6 @@ def finalize_headers():
             i += 8
             continue
         
-        # Заполнение смещения секции данных
         elif 'p_offset (data stub)' in source:
             new_bytes = struct.pack('<Q', data_offset)
             for j, nb in enumerate(new_bytes):
@@ -788,33 +731,30 @@ def finalize_headers():
             i += 8
             continue
         
-        # Заполнение виртуального адреса секции данных
         elif 'p_vaddr (data stub)' in source:
-            new_bytes = struct.pack('<Q', vaddr_data_start)
+            new_bytes = struct.pack('<Q', vaddr_data_final)
             for j, nb in enumerate(new_bytes):
-                virt = f"0x{vaddr_data_start + j:08x}"
+                virt = f"0x{vaddr_data_final + j:08x}"
                 byte_hex = f"0x{nb:02x}"
                 entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
-                                  f"p_vaddr (data) = 0x{vaddr_data_start:x}", 
+                                  f"p_vaddr (data) = 0x{vaddr_data_final:x}", 
                                   label if j == 0 else "", 
                                   "", "", byte_hex)
             i += 8
             continue
         
-        # Заполнение физического адреса секции данных
         elif 'p_paddr (data stub)' in source:
-            new_bytes = struct.pack('<Q', vaddr_data_start)
+            new_bytes = struct.pack('<Q', vaddr_data_final)
             for j, nb in enumerate(new_bytes):
-                virt = f"0x{vaddr_data_start + j:08x}"
+                virt = f"0x{vaddr_data_final + j:08x}"
                 byte_hex = f"0x{nb:02x}"
                 entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
-                                  f"p_paddr (data) = 0x{vaddr_data_start:x}", 
+                                  f"p_paddr (data) = 0x{vaddr_data_final:x}", 
                                   label if j == 0 else "", 
                                   "", "", byte_hex)
             i += 8
             continue
         
-        # Заполнение размера секции данных в файле
         elif 'p_filesz (data stub)' in source:
             new_bytes = struct.pack('<Q', data_filesz)
             for j, nb in enumerate(new_bytes):
@@ -827,22 +767,20 @@ def finalize_headers():
             i += 8
             continue
         
-        # Заполнение размера секции данных в памяти (ВКЛЮЧАЯ BSS И ВЫРАВНИВАНИЕ!)
         elif 'p_memsz (data stub)' in source:
             new_bytes = struct.pack('<Q', data_memsz)
             for j, nb in enumerate(new_bytes):
                 virt = f"0x{addr + j:08x}"
                 byte_hex = f"0x{nb:02x}"
                 entries[i + j] = (segment, addr + j, virt, byte_hex, target, 
-                                  f"p_memsz (data) = {data_memsz} (data: {data_filesz}, bss: {bss_size}, выравнивание: {data_memsz - data_filesz - bss_size})", 
+                                  f"p_memsz (data) = {data_memsz}", 
                                   label if j == 0 else "", 
                                   "", "", byte_hex)
             i += 8
             continue
         
         i += 1
-    
-    print("[DEBUG finalize_headers] Завершено")
+
 
 def save_to_csv(filename: str):
     with open(filename, 'w', newline='', encoding='utf-8') as f:
@@ -854,7 +792,7 @@ def save_to_csv(filename: str):
         for segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte in entries:
             writer.writerow([
                 segment,
-                f"0x{addr:08x}" if isinstance(addr, int) else addr,
+                f"0x{addr:08x}",
                 virt_addr,
                 byte_str,
                 label,
@@ -866,7 +804,9 @@ def save_to_csv(filename: str):
             ])
 
 
+
 def print_section_info():
+    """Выводит информацию о секциях с учётом выравнивания"""
     text_start_offset = 0x1000
     text_end_offset = text_start_offset + len(text_buffer)
     text_end_aligned = align_up(text_end_offset, PAGE_SIZE)
@@ -875,21 +815,24 @@ def print_section_info():
     data_end_offset = data_start_offset + len(data_buffer)
     data_end_aligned = align_up(data_end_offset, PAGE_SIZE)
     
+    bnd_start_offset = data_end_aligned
+    bnd_end_offset = bnd_start_offset + bnd_size
+    
     print(f"\n=== Информация о размещении секций (файловые смещения) ===")
     print(f"  .text: {len(text_buffer)} байт, смещение 0x{text_start_offset:x} - 0x{text_end_offset-1:x}")
     print(f"         выровнено: следующий сектор начнётся с 0x{text_end_aligned:x}")
     print(f"  .data: {len(data_buffer)} байт, смещение 0x{data_start_offset:x} - 0x{data_end_offset-1:x}")
     print(f"         выровнено: следующий сектор начнётся с 0x{data_end_aligned:x}")
-    if bss_size > 0:
-        print(f"  .bnd:  {bss_size} байт (только в памяти, не в файле)")
+    if bnd_size > 0:
+        print(f"  .bnd:  {bnd_size} байт, смещение 0x{bnd_start_offset:x} - 0x{bnd_end_offset-1:x}")
     
     print(f"\n=== Виртуальные адреса ===")
     print(f"  .text: 0x{vaddr_text:x} - 0x{vaddr_text + len(text_buffer) - 1:x}")
     data_vaddr = align_up(vaddr_text + len(text_buffer), PAGE_SIZE)
     print(f"  .data: 0x{data_vaddr:x} - 0x{data_vaddr + len(data_buffer) - 1:x}")
-    if bss_size > 0:
+    if bnd_size > 0:
         bnd_vaddr = align_up(data_vaddr + len(data_buffer), PAGE_SIZE)
-        print(f"  .bnd:  0x{bnd_vaddr:x} - 0x{bnd_vaddr + bss_size - 1:x}")
+        print(f"  .bnd:  0x{bnd_vaddr:x} - 0x{bnd_vaddr + bnd_size - 1:x}")
 
 
 def main():
@@ -913,6 +856,7 @@ def main():
     
     finalize_headers()
     save_to_csv(csv_file)
+        # Добавить эту строку:
     print_section_info()
     
     vaddr_data_final = align_up(vaddr_text + len(text_buffer), PAGE_SIZE)
@@ -921,7 +865,7 @@ def main():
     print(f"\n=== Первый проход ===")
     print(f"  .text: {len(text_buffer)} байт, vaddr=0x{vaddr_text:x}")
     print(f"  .data: {len(data_buffer)} байт, vaddr=0x{vaddr_data_final:x}, offset=0x{align_up(0x1000 + len(text_buffer), PAGE_SIZE):x}")
-    print(f"  .bnd:  {bss_size} байт, vaddr=0x{vaddr_bnd_final:x} (только в памяти)")
+    print(f"  .bnd:  {bnd_size} байт, vaddr=0x{vaddr_bnd_final:x}")
     print(f"  точка входа: {entry_point} = 0x{labels.get(entry_point, vaddr_text):x}")
     print(f"  меток: {len(labels)}")
     print(f"  констант: {len(symbols)}")
