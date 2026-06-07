@@ -131,13 +131,14 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
 
 
 def add_bss_entry(size: int, label: str = None):
-    """Добавляет запись для BSS в CSV (БЕЗ увеличения файлового адреса)"""
+    """Добавляет запись для BSS в CSV """
     global bss_size, vaddr_bnd
     
     bss_start = bss_size
     bss_size += size
     
     bss_file_addr = "BSS"
+    bss_file_addr = current_address
     
     for offset in range(size):
         virt_addr = vaddr_bnd + bss_start + offset
@@ -146,16 +147,16 @@ def add_bss_entry(size: int, label: str = None):
         # ПОРЯДОК ПОЛЕЙ ДОЛЖЕН СООТВЕТСТВОВАТЬ РАСПАКОВКЕ В save_to_csv:
         # segment, addr, virt_addr, byte_str, target, source, label, cmd_with_values, calc_target, calc_byte
         entries.append((
-            ".bss",                           # segment
-            bss_file_addr,                    # addr
-            f"0x{virt_addr:08x}",             # virt_addr
-            "0x00",                           # byte_str
-            "",                               # target (уводящий_адрес) - пусто
-            f".резб {size}" if offset == 0 else "",  # source (исходная_команда)
-            label_name,                       # label (приводящая_метка) ← сюда имя метки!
-            "",                               # cmd_with_values
-            "",                               # calc_target
-            "0x00"                            # calc_byte
+            ".bss",                                     # segment
+            f"0x{bss_file_addr + offset:08x}",          # addr
+            f"0x{virt_addr:08x}",                       # virt_addr
+            "0x00",                                     # byte_str
+            "",                                         # target (уводящий_адрес) - пусто
+            f".резб {size}" if offset == 0 else "",     # source (исходная_команда)
+            label_name,                                 # label (приводящая_метка) ← сюда имя метки!
+            "",                                         # cmd_with_values
+            "",                                         # calc_target
+            "0x00"                                      # calc_byte
         ))
         
 
