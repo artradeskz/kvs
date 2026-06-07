@@ -129,9 +129,29 @@ def add_byte(value: int, source: str = "", target=None, labels_list=None):
     if pending_labels:
         pending_labels = []
 
-
 def add_bss_entry(size: int, label: str = None):
+    global bss_size, vaddr_bnd
+    
+    bss_start = bss_size
+    bss_size += size
+    
+    # Виртуальный адрес начала блока
+    virt_addr = vaddr_bnd + bss_start
+    
+    entries.append((
+        ".bss",                     # сегмент
+        "BSS",                      # файловый адрес (специальное значение)
+        f"0x{virt_addr:08x}",       # виртуальный адрес
+        "",                         # байт
+        "",                         # уводящий адрес
+        f".резб {size}",            # исходная команда
+        label if label else "",     # приводящая метка
+        "", "", ""
+    ))        
     """Добавляет запись для BSS в CSV """
+"""
+def add_bss_entry(size: int, label: str = None):
+
     global bss_size, vaddr_bnd
     
     bss_start = bss_size
@@ -158,7 +178,7 @@ def add_bss_entry(size: int, label: str = None):
             "",                                         # calc_target
             "0x00"                                      # calc_byte
         ))
-        
+"""        
 
 
 def add_bytes(values, source: str = "", target=None):

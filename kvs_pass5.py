@@ -59,17 +59,20 @@ def analyze_csv(csv_file):
                 except:
                     pass
             
-            # BSS секция
+            # BSS секция (одна запись на блок)
             if seg == '.bss':
                 if source and source.startswith('.резб'):
-                    size = int(source.split()[1])
-                    virt_start = int(virt_addr_str, 16)
-                    bss_blocks.append({
-                        'virt_start': virt_start,
-                        'size': size,
-                        'label': label,
-                        'source': source
-                    })
+                    # Формат: ".резб 1048576"
+                    parts = source.split()
+                    if len(parts) >= 2:
+                        size = int(parts[1])
+                        virt_start = int(virt_addr_str, 16) if virt_addr_str else 0
+                        bss_blocks.append({
+                            'virt_start': virt_start,
+                            'size': size,
+                            'label': label,
+                            'source': source
+                        })
                 continue
             
             # Обычные секции
@@ -105,7 +108,11 @@ def analyze_csv(csv_file):
     if sections['.data']['start'] and sections['.data']['end']:
         sections['.data']['size'] = sections['.data']['end'] - sections['.data']['start'] + 1
     
-    return sections, bss_blocks, max_addr
+    # Вычисляем общий размер BSS и начальный виртуальный адрес
+    bss_total_size = sum(block['size'] for block in bss_blocks)
+    bss_start_vaddr = min((block['virt_start'] for block in bss_blocks), default=0)
+    
+    return sections, bss_blocks, max_addr, bss_total_size, bss_start_vaddr
 
 
 def generate_comment_data():
@@ -116,13 +123,9 @@ def generate_comment_data():
 
 def generate_shstrtab_binary(has_bss):
     """Генерирует бинарную таблицу имён секций (как в kvs_8.py)"""
-    # Формат: \0.text\0.data\0.comment\0.shstrtab\0
-    # (и .bss если есть)
     if has_bss:
-        # .text, .data, .bss, .comment, .shstrtab
         names = ['', '.text', '.data', '.bss', '.comment', '.shstrtab']
     else:
-        # .text, .data, .comment, .shstrtab
         names = ['', '.text', '.data', '.comment', '.shstrtab']
     
     result = b''
@@ -133,14 +136,10 @@ def generate_shstrtab_binary(has_bss):
 
 
 def create_null_section_entry(shdr_offset):
-    """Создаёт нулевую секцию (индекс 0) — все поля нулевые (sh_addralign=1 как в эталоне)"""
+    """Создаёт нулевую секцию (индекс 0) — все поля нулевые"""
     entries = []
-    # 64 байта нулей для нулевой секции
     for j in range(64):
-        if 48 <= j <= 55:
-            byte_val = 0x01 if j == 48 else 0x00
-        else:
-            byte_val = 0x00
+        byte_val = 0x01 if j == 48 else 0x00  # sh_addralign = 1
         entries.append({
             'сегмент': '.shdr',
             'адрес': f"0x{shdr_offset + j:08x}",
@@ -156,12 +155,16 @@ def create_null_section_entry(shdr_offset):
     return entries
 
 
-def create_section_table_entries(sections, has_bss, shdr_offset, shstrtab_offset, comment_offset, comment_size, shstrtab_data):
+def create_section_table_entries(sections, has_bss, shdr_offset, shstrtab_offset, 
+                                  comment_offset, comment_size, shstrtab_data,
+                                  bss_start_vaddr, bss_total_size):
     """Создаёт записи таблицы секций для CSV (с нулевой секцией, .comment и .shstrtab)"""
     
     if DEBUG_PRINTS:
         print("\n[DEBUG] create_section_table_entries")
         print(f"  has_bss = {has_bss}")
+        print(f"  bss_start_vaddr = 0x{bss_start_vaddr:x}")
+        print(f"  bss_total_size = {bss_total_size}")
         print(f"  shdr_offset = 0x{shdr_offset:x}")
         print(f"  shstrtab_offset = 0x{shstrtab_offset:x}")
         print(f"  comment_offset = 0x{comment_offset:x}")
@@ -169,26 +172,25 @@ def create_section_table_entries(sections, has_bss, shdr_offset, shstrtab_offset
     
     entries = []
     
-    # Сначала добавляем НУЛЕВУЮ СЕКЦИЮ (индекс 0)
+    # Нулевая секция
     null_entries = create_null_section_entry(shdr_offset)
     entries.extend(null_entries)
     
     if DEBUG_PRINTS:
         print(f"  Нулевая секция: {len(null_entries)} байт по адресу 0x{shdr_offset:x}")
     
-    # Смещение для следующей секции (после нулевой)
     next_offset = shdr_offset + 64
     
     if DEBUG_PRINTS:
-        print(f"  next_offset = 0x{next_offset:x} (начало заголовков секций)")
+        print(f"  next_offset = 0x{next_offset:x}")
     
-    # Вычисляем индексы имён в .shstrtab в зависимости от наличия BSS
+    # Индексы в .shstrtab
     if has_bss:
         idx_text = 1
         idx_data = 7
         idx_bss = 13
-        idx_comment = 17
-        idx_shstrtab = 22
+        idx_comment = 18
+        idx_shstrtab = 27 # это харкод, если поменяю название сборщика - придется менять
     else:
         idx_text = 1
         idx_data = 7
@@ -196,90 +198,59 @@ def create_section_table_entries(sections, has_bss, shdr_offset, shstrtab_offset
         idx_shstrtab = 22
     
     if DEBUG_PRINTS:
-        print(f"  Индексы в .shstrtab:")
-        print(f"    idx_text = {idx_text}")
-        print(f"    idx_data = {idx_data}")
-        if has_bss:
-            print(f"    idx_bss = {idx_bss}")
-        print(f"    idx_comment = {idx_comment}")
-        print(f"    idx_shstrtab = {idx_shstrtab}")
+        print(f"  Индексы в .shstrtab: text={idx_text}, data={idx_data}, bss={idx_bss if has_bss else 'N/A'}, comment={idx_comment}, shstrtab={idx_shstrtab}")
     
-    # 1. Заголовок для .text (индекс 1)
+    # 1. .text
     header_text = struct.pack('<IIQQQQIIQQ',
-        idx_text, 1, 6,  # SHT_PROGBITS, SHF_ALLOC|SHF_EXECINSTR
+        idx_text, 1, 6,
         sections['.text']['virt_start'],
         sections['.text']['start'],
         sections['.text']['size'],
         0, 0, 16, 0)
     
-    if DEBUG_PRINTS:
-        print(f"\n  Заголовок .text (64 байта):")
-        print(f"    sh_name = {idx_text} (должно быть 1)")
-        print(f"    sh_type = 1")
-        print(f"    sh_flags = 6")
-        print(f"    sh_addr = 0x{sections['.text']['virt_start']:x}")
-        print(f"    sh_offset = 0x{sections['.text']['start']:x}")
-        print(f"    sh_size = {sections['.text']['size']}")
-        print(f"    Первые 4 байта (sh_name): {header_text[0:4].hex()}")
-    
-    # 2. Заголовок для .data (индекс 2)
+    # 2. .data
     header_data = struct.pack('<IIQQQQIIQQ',
-        idx_data, 1, 3,  # SHT_PROGBITS, SHF_ALLOC|SHF_WRITE
+        idx_data, 1, 3,
         sections['.data']['virt_start'],
         sections['.data']['start'],
         sections['.data']['size'],
         0, 0, 8, 0)
     
-    if DEBUG_PRINTS:
-        print(f"\n  Заголовок .data (64 байта):")
-        print(f"    sh_name = {idx_data} (должно быть 7)")
-        print(f"    Первые 4 байта (sh_name): {header_data[0:4].hex()}")
-    
     headers = [header_text, header_data]
     header_names = ['.text', '.data']
     
-    # 3. Заголовок для .bss (если есть)
-    if has_bss:
-        total_bss = sum(b['size'] for b in sections.get('bss', [])) if isinstance(sections.get('bss'), list) else 0
+    # 3. .bss (если есть)
+    if has_bss and bss_total_size > 0:
+        # SHT_NOBITS = 8, SHF_WRITE|SHF_ALLOC = 3
         header_bss = struct.pack('<IIQQQQIIQQ',
-            idx_bss, 8, 3,  # SHT_NOBITS, SHF_ALLOC|SHF_WRITE
-            0, 0, total_bss,
+            idx_bss, 8, 3,
+            bss_start_vaddr,   # sh_addr
+            0,                  # sh_offset (для NOBITS неважно)
+            bss_total_size,     # sh_size
             0, 0, 16, 0)
         headers.append(header_bss)
         header_names.append('.bss')
         if DEBUG_PRINTS:
-            print(f"\n  Заголовок .bss (64 байта):")
-            print(f"    sh_name = {idx_bss} (должно быть 13)")
-            print(f"    Первые 4 байта (sh_name): {header_bss[0:4].hex()}")
+            print(f"  Заголовок .bss: addr=0x{bss_start_vaddr:x}, size={bss_total_size}")
     
-    # 4. Заголовок для .comment
+    # 4. .comment
     header_comment = struct.pack('<IIQQQQIIQQ',
-        idx_comment, 1, 0,  # SHT_PROGBITS, no flags
+        idx_comment, 1, 0,
         0, comment_offset, comment_size,
         0, 0, 1, 0)
     headers.append(header_comment)
     header_names.append('.comment')
     
-    if DEBUG_PRINTS:
-        print(f"\n  Заголовок .comment (64 байта):")
-        print(f"    sh_name = {idx_comment} (должно быть 13 или 17)")
-        print(f"    Первые 4 байта (sh_name): {header_comment[0:4].hex()}")
-    
-    # 5. Заголовок для .shstrtab (последний)
+    # 5. .shstrtab
     shstrtab_size = len(shstrtab_data)
     header_shstrtab = struct.pack('<IIQQQQIIQQ',
-        idx_shstrtab, 3, 0,  # SHT_STRTAB, no flags
+        idx_shstrtab, 3, 0,
         0, shstrtab_offset, shstrtab_size,
         0, 0, 1, 0)
     headers.append(header_shstrtab)
     header_names.append('.shstrtab')
     
-    if DEBUG_PRINTS:
-        print(f"\n  Заголовок .shstrtab (64 байта):")
-        print(f"    sh_name = {idx_shstrtab} (должно быть 22)")
-        print(f"    Первые 4 байта (sh_name): {header_shstrtab[0:4].hex()}")
-    
-    # Записываем остальные заголовки секций
+    # Записываем заголовки секций
     if DEBUG_PRINTS:
         print(f"\n  Запись заголовков секций в CSV:")
     
@@ -305,10 +276,10 @@ def create_section_table_entries(sections, has_bss, shdr_offset, shstrtab_offset
         print(f"\n  Всего заголовков: {len(headers)}")
         print(f"  Возвращаем секций: {len(headers) + 1} (включая NULL)")
     
-    return entries, len(headers) + 1  # +1 для нулевой секции
+    return entries, len(headers) + 1
 
 
-def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, data_offset):
+def regenerate_program_headers_in_csv(csv_file, sections, bss_total_size, text_offset, data_offset):
     """Обновляет программные заголовки по адресу, вставляет новые при необходимости"""
     
     # Читаем CSV
@@ -317,7 +288,6 @@ def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, 
         fieldnames = reader.fieldnames
         rows = list(reader)
     
-    # Функция для получения числового адреса
     def get_addr_num(row):
         addr_str = row.get('адрес', '')
         if addr_str and addr_str != 'BSS' and addr_str.startswith('0x'):
@@ -327,9 +297,8 @@ def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, 
                 return None
         return None
     
-    # Создаём словарь существующих строк по адресу
     addr_to_row = {}
-    rows_without_addr = []  # Строки без адреса (BSS и т.д.)
+    rows_without_addr = []
     
     for row in rows:
         addr = get_addr_num(row)
@@ -338,17 +307,14 @@ def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, 
         else:
             rows_without_addr.append(row)
     
-    # Вычисляем размеры
     text_size = sections['.text']['size']
     data_size = sections['.data']['size']
-    bss_size = 0
     vaddr_text = sections['.text']['virt_start']
     vaddr_data = sections['.data']['virt_start']
     text_memsz = align_up(text_size, PAGE_SIZE)
-    data_memsz = align_up(data_size + bss_size, PAGE_SIZE)
+    data_memsz = align_up(data_size + bss_total_size, PAGE_SIZE)
     
-    # Генерируем новые записи
-    new_entries = []  # (addr, row)
+    new_entries = []
     
     header_defs = [
         # PHDR 0: ELF headers (R)
@@ -382,7 +348,6 @@ def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, 
         (0xe0, PAGE_SIZE, 'Q', 'p_align = 0x1000'),
     ]
     
-    # Генерируем байтовые записи
     for addr, value, pack_type, command in header_defs:
         if pack_type == 'I':
             bytes_data = struct.pack('<I', value)
@@ -405,22 +370,16 @@ def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, 
             }
             new_entries.append((current_addr, new_row))
     
-    # ОБНОВЛЯЕМ существующие строки по адресу
     for addr, new_row in new_entries:
-        addr_to_row[addr] = new_row  # Заменяем или добавляем
+        addr_to_row[addr] = new_row
     
-    # Сортируем все адреса
     sorted_addrs = sorted(addr_to_row.keys())
     
-    # Собираем итоговые строки
     final_rows = []
     for addr in sorted_addrs:
         final_rows.append(addr_to_row[addr])
-    
-    # Добавляем строки без адресов в конец
     final_rows.extend(rows_without_addr)
     
-    # Записываем обратно
     with open(csv_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=';', restval='')
         writer.writeheader()
@@ -430,7 +389,8 @@ def regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, 
     print(f"   Обновлено/добавлено записей: {len(new_entries)}")
     print(f"   Всего записей с адресами: {len(sorted_addrs)}")
 
-def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
+
+def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize, e_shstrndx):
     """Обновляет ELF-заголовок в CSV файле"""
     
     rows = []
@@ -440,7 +400,7 @@ def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
         for row in reader:
             rows.append(row)
     
-    # e_shoff (8 байт по смещению 0x28-0x2f)
+    # e_shoff
     shoff_bytes = struct.pack('<Q', e_shoff)
     for i in range(8):
         addr = f"0x{0x28 + i:08x}"
@@ -450,7 +410,7 @@ def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
                 row['байт'] = f"0x{shoff_bytes[i]:02x}"
                 row['исходная_команда'] = f"e_shoff = 0x{e_shoff:x}"
     
-    # e_shnum (2 байта по смещению 0x3c-0x3d)
+    # e_shnum
     shnum_bytes = struct.pack('<H', e_shnum)
     for i in range(2):
         addr = f"0x{0x3c + i:08x}"
@@ -460,7 +420,7 @@ def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
                 row['байт'] = f"0x{shnum_bytes[i]:02x}"
                 row['исходная_команда'] = f"e_shnum = {e_shnum}"
     
-    # e_shentsize (2 байта по смещению 0x3a-0x3b)
+    # e_shentsize
     shentsize_bytes = struct.pack('<H', e_shentsize)
     for i in range(2):
         addr = f"0x{0x3a + i:08x}"
@@ -470,8 +430,7 @@ def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
                 row['байт'] = f"0x{shentsize_bytes[i]:02x}"
                 row['исходная_команда'] = f"e_shentsize = {e_shentsize}"
     
-    # e_shstrndx (2 байта по смещению 0x3e-0x3f)
-    e_shstrndx = e_shnum - 1
+    # e_shstrndx
     shstrndx_bytes = struct.pack('<H', e_shstrndx)
     for i in range(2):
         addr = f"0x{0x3e + i:08x}"
@@ -481,7 +440,7 @@ def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
                 row['байт'] = f"0x{shstrndx_bytes[i]:02x}"
                 row['исходная_команда'] = f"e_shstrndx = {e_shstrndx}"
     
-    # e_phnum (2 байта по смещению 0x38-0x39)
+    # e_phnum
     phnum_bytes = struct.pack('<H', 3)
     for i in range(2):
         addr = f"0x{0x38 + i:08x}"
@@ -491,7 +450,7 @@ def update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize):
                 row['байт'] = f"0x{phnum_bytes[i]:02x}"
                 row['исходная_команда'] = f"e_phnum = 3"
     
-    # e_phoff (8 байт по смещению 0x20-0x27)
+    # e_phoff
     phoff_bytes = struct.pack('<Q', 0x40)
     for i in range(8):
         addr = f"0x{0x20 + i:08x}"
@@ -521,14 +480,12 @@ def merge_csv_with_section_table(csv_file, section_entries, comment_entries, shs
         fieldnames = reader.fieldnames
         rows = list(reader)
     
-    # Проверка на дубликаты адресов
     existing_addrs = set()
     for row in rows:
         addr = row['адрес']
         if addr and addr != 'BSS':
             existing_addrs.add(addr)
     
-    # Добавляем записи таблицы секций
     new_count = 0
     for entry in section_entries:
         if entry['адрес'] not in existing_addrs:
@@ -536,14 +493,12 @@ def merge_csv_with_section_table(csv_file, section_entries, comment_entries, shs
             existing_addrs.add(entry['адрес'])
             new_count += 1
     
-    # Добавляем записи .comment
     for entry in comment_entries:
         if entry['адрес'] not in existing_addrs:
             rows.append(entry)
             existing_addrs.add(entry['адрес'])
             new_count += 1
     
-    # Добавляем записи .shstrtab
     for entry in shstrtab_entries:
         if entry['адрес'] not in existing_addrs:
             rows.append(entry)
@@ -581,7 +536,7 @@ def add_comment_data(comment_offset):
 
 
 def add_shstrtab_data(shstrtab_offset, shstrtab_data):
-    """Создаёт записи для данных .shstrtab (включая начальный нулевой байт)"""
+    """Создаёт записи для данных .shstrtab"""
     entries = []
     
     for j, byte in enumerate(shstrtab_data):
@@ -601,7 +556,7 @@ def add_shstrtab_data(shstrtab_offset, shstrtab_data):
     return entries
 
 
-def print_section_info(sections, has_bss, max_addr):
+def print_section_info(sections, has_bss, max_addr, bss_total_size, bss_start_vaddr):
     """Выводит основную информацию о секциях"""
     
     print("\n" + "="*60)
@@ -622,13 +577,13 @@ def print_section_info(sections, has_bss, max_addr):
     
     if has_bss:
         print(f"\n📦 Секция .bnd (BSS):")
-        print(f"   Присутствует (индексы в .shstrtab сдвинуты)")
+        print(f"   Виртуальный адрес: 0x{bss_start_vaddr:08x}")
+        print(f"   Размер: {bss_total_size} байт")
     else:
         print(f"\n📦 Секция .bnd (BSS):")
         print(f"   Нет BSS-блоков")
     
     print(f"\n📍 Максимальный файловый адрес: 0x{max_addr:08x}")
-
 
 def main():
     if len(sys.argv) != 2:
@@ -639,41 +594,31 @@ def main():
     
     print(f"\n📊 Анализ CSV: {csv_file}")
     
-    sections, bss_blocks, max_addr = analyze_csv(csv_file)
-    has_bss = len(bss_blocks) > 0
-    print_section_info(sections, has_bss, max_addr)
+    sections, bss_blocks, max_addr, bss_total_size, bss_start_vaddr = analyze_csv(csv_file)
+    has_bss = bss_total_size > 0
+    print_section_info(sections, has_bss, max_addr, bss_total_size, bss_start_vaddr)
     
-    # Вычисляем смещения (как в kvs_8.py)
     text_offset = sections['.text']['start']
     data_offset = sections['.data']['start']
     text_size = sections['.text']['size']
     data_size = sections['.data']['size']
     
-    # Размеры данных
     comment_data = generate_comment_data()
     comment_size = len(comment_data)
     
-    # Порядок размещения (как в kvs_8.py):
-    # 1. .text (0x1000)
-    # 2. .data (0x2000)
-    # 3. .comment (сразу после .data)
     comment_offset = data_offset + data_size
     print(f"   comment_offset = 0x{comment_offset:x}")
     
-    # 4. .shstrtab (выравнивание на 8 байт после .comment)
     shstrtab_data = generate_shstrtab_binary(has_bss)
     shstrtab_size = len(shstrtab_data)
     shstrtab_offset = align_up(comment_offset + comment_size, 8)
     print(f"   shstrtab_offset = 0x{shstrtab_offset:x}")
     print(f"   shstrtab_size = {shstrtab_size}")
     
-    # 5. Таблица секций (выравнивание на 16 байт после .shstrtab)
-    # Количество секций: NULL + .text + .data + .comment + .shstrtab (+ .bss если есть)
-    num_sections = 5  # NULL + .text + .data + .comment + .shstrtab
+    num_sections = 5
     if has_bss:
-        num_sections += 1  # + .bss
+        num_sections += 1
     
-    # Таблица секций размещается после .shstrtab
     shdr_offset = align_up(shstrtab_offset + shstrtab_size, 16)
     print(f"   shdr_offset = 0x{shdr_offset:x}")
     
@@ -685,33 +630,37 @@ def main():
     print(f"   Количество секций: {num_sections}")
     print(f"   Наличие BSS: {has_bss}")
     
-    # ПЕРЕСОЗДАЁМ ПРОГРАММНЫЕ ЗАГОЛОВКИ
-    regenerate_program_headers_in_csv(csv_file, sections, has_bss, text_offset, data_offset)
+    # === НОВЫЙ КОД: обновляем max_addr ===
+    max_addr = max(max_addr, comment_offset + comment_size - 1)
+    max_addr = max(max_addr, shstrtab_offset + shstrtab_size - 1)
+    max_addr = max(max_addr, shdr_offset + (num_sections * 64) - 1)
+    print(f"\n📍 Обновлённый максимальный файловый адрес: 0x{max_addr:08x}")
+    # === КОНЕЦ НОВОГО КОДА ===
     
-    # Генерируем записи таблицы секций
+    # Обновляем программные заголовки с учётом BSS
+    regenerate_program_headers_in_csv(csv_file, sections, bss_total_size, text_offset, data_offset)
+    
+    # Создаём записи таблицы секций
     entries, num_headers = create_section_table_entries(
-        sections, has_bss, shdr_offset, shstrtab_offset, comment_offset, comment_size, shstrtab_data
+        sections, has_bss, shdr_offset, shstrtab_offset, comment_offset, comment_size, 
+        shstrtab_data, bss_start_vaddr, bss_total_size
     )
     
-    # Генерируем данные для .comment
     comment_entries = add_comment_data(comment_offset)
-    
-    # Генерируем данные для .shstrtab
     shstrtab_entries = add_shstrtab_data(shstrtab_offset, shstrtab_data)
     
     e_shoff = shdr_offset
     e_shnum = num_headers
     e_shentsize = 64
+    e_shstrndx = num_headers - 1
     
     print(f"\n📝 Обновление ELF-заголовка:")
     print(f"   e_shoff = 0x{e_shoff:08x}")
     print(f"   e_shnum = {e_shnum}")
     print(f"   e_shentsize = {e_shentsize}")
+    print(f"   e_shstrndx = {e_shstrndx}")
     
-    # Обновляем ELF-заголовок в CSV
-    update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize)
-    
-    # Добавляем таблицу секций, .comment и .shstrtab в CSV
+    update_elf_header_in_csv(csv_file, e_shoff, e_shnum, e_shentsize, e_shstrndx)
     merge_csv_with_section_table(csv_file, entries, comment_entries, shstrtab_entries)
     
     print(f"\n💾 Таблица секций добавлена в {csv_file}")
@@ -723,10 +672,7 @@ def main():
     print(f"   .shstrtab выровнен на 8 байт")
     print(f"   Таблица секций выровнена на 16 байт")
     if has_bss:
-        print(f"   BSS присутствует → индекс .shstrtab = 21")
-    else:
-        print(f"   BSS отсутствует → индекс .shstrtab = 21")
-
+        print(f"   BSS присутствует, размер {bss_total_size} байт, адрес 0x{bss_start_vaddr:x}")
 
 if __name__ == "__main__":
     main()
