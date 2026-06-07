@@ -34,6 +34,7 @@ if __name__ == "__main__":
         ("kvs_pass3.py", [ast_file, csv_file], "3 проход"),
         ("kvs_pass4.py", [csv_file], "4 проход"),
         ("kvs_pass5.py", [csv_file], "5 проход"),
+        ("kvs_pass6.py", [csv_file], "6 проход"),
         ("kvs_builder.py", [csv_file, elf_file], "Сборка ELF"),
     ]
     
