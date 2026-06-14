@@ -612,7 +612,7 @@ gdb ./программа.elf
 - Многомодульная компиляция
 - Макросы
 
-### Инструменты разработчика
+## Инструменты разработчика
 
 **Подсветка синтаксиса для VS Code** — доступно расширение [Universal Assembly Syntax Highlighting](https://github.com/artradeskz/Universal-Assembly-Syntax-Highlighting) с поддержкой языка КВС (русские инструкции, регистры, секции и директивы)
 
