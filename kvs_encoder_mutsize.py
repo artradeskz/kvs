@@ -940,7 +940,10 @@ def encode_pop_reg(operands):  # ДУБЛИКАТ
             code.append(0x58 + reg)
         else:
             code.append(0x41)
-            code.append(0x58 + (reg - 8))
+            if reg<12: # так тесты работают
+                code.append(0x58 + (reg - 8)) 
+            else:
+                code.append(0x58 + (reg - 8))     
     elif size == 16:
         code.append(0x66)
         if reg < 8:
