@@ -186,44 +186,92 @@ def encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text):
     return code
 
 
-def encode_mov_reg_mem_indirect(reg_info, base_reg):
+def encode_mov_reg_mem_indirect(reg_info: dict, base_reg: str) -> bytearray:
     """
-    Кодирует MOV reg, [base_reg] — косвенная адресация.
-    Пример: mov rax, [rbx] → 48 8B 03
-    
-    Аргументы:
-    - reg_info: словарь от get_reg_info() с ключами 'index' (int) и 'size' (int)
-    - base_reg: строка с именем регистра, например 'рбикс'
-    
-    REGISTERS[base_reg] возвращает число-индекс (int), НЕ словарь.
+    Кодирует MOV reg, [base_reg] — косвенная адресация через регистр.
     """
     code = bytearray()
-    reg = reg_info['index']
-    base = REGISTERS[base_reg]  # REGISTERS возвращает int (индекс регистра)
     
-    rex = 0x48 if reg_info['size'] == 64 else 0x40
-    if reg >= 8:
-        rex |= 0x04  # REX.R
-    if base >= 8:
-        rex |= 0x01  # REX.B
-    code.append(rex)
-    code.append(0x8B)  # MOV r64, r/m64
+    # === 1. Получаем индексы регистров ===
+    reg_index = reg_info['index']
+    reg_size = reg_info['size']
     
-    # Особый случай: [rbp] или [r13] требует disp8=0 при mod=00
-    # (mod=00 с r/m=101 означает RIP-relative, а не [rbp])
-    if (base & 7) == 5:
-        # mod=01 (disp8), reg, r/m=5
-        modrm = 0x40 | ((reg & 7) << 3) | 5
-        code.append(modrm)
-        code.append(0x00)  # disp8 = 0
+    if base_reg not in REGISTERS:
+        raise ValueError(f"Неизвестный базовый регистр: {base_reg}")
+    base_index = REGISTERS[base_reg]
+    
+    # === 2. Выбираем opcode и префиксы ===
+    #
+    # В x86-64 для MOV существуют разные opcodes:
+    #   - 8A /r  — MOV r8, r/m8  (только 8-бит!)
+    #   - 8B /r  — MOV r16/r32/r64, r/m16/r/m32/r/m64
+    # 
+    # Для 16-бит нужен префикс 0x66
+    # Для 64-бит нужен REX.W (бит 3 в REX)
+    #
+    if reg_size == 8:
+        opcode = 0x8A          # MOV r8, r/m8
+        rex_base = 0x40        # Без REX.W
+        need_prefix_66 = False
+    elif reg_size == 16:
+        opcode = 0x8B          # MOV r16, r/m16
+        rex_base = 0x40        # Без REX.W
+        need_prefix_66 = True   # ← ВАЖНО: префикс 0x66 для 16-бит!
+    elif reg_size == 32:
+        opcode = 0x8B          # MOV r32, r/m32
+        rex_base = 0x40        # Без REX.W
+        need_prefix_66 = False
+    elif reg_size == 64:
+        opcode = 0x8B          # MOV r64, r/m64
+        rex_base = 0x48        # С REX.W (бит 3 = 1)
+        need_prefix_66 = False
     else:
-        # mod=00, reg, r/m=base
-        modrm = ((reg & 7) << 3) | (base & 7)
-        code.append(modrm)
+        raise ValueError(f"Неподдерживаемый размер регистра: {reg_size} бит")
+    
+    # === 3. Формируем REX-префикс ===
+    rex = rex_base
+    
+    # REX.R: для регистра-источника (reg) — нужен если индекс >= 8
+    if reg_index >= 8:
+        rex |= 0x04  # REX.R = 1
+    
+    # REX.B: для базового регистра (base) — нужен если индекс >= 8
+    if base_index >= 8:
+        rex |= 0x01  # REX.B = 1
+    
+    # === 4. Формируем ModR/M байт ===
+    if (base_index & 7) == 5:
+        # [rbp] или [r13] требуют disp8=0
+        modrm = 0x40 | ((reg_index & 7) << 3) | 5
+        modrm_byte = modrm
+        disp8 = 0x00
+    else:
+        modrm = ((reg_index & 7) << 3) | (base_index & 7)
+        modrm_byte = modrm
+        disp8 = None
+    
+    # === 5. Собираем инструкцию ===
+    
+    # 5a. Префикс 0x66 для 16-битных операндов (ДО REX!)
+    if need_prefix_66:
+        code.append(0x66)
+    
+    # 5b. REX-префикс (если не равен 0x40)
+    if rex != 0x40:
+        code.append(rex)
+    
+    # 5c. Opcode
+    code.append(opcode)
+    
+    # 5d. ModR/M байт
+    code.append(modrm_byte)
+    
+    # 5e. Disp8 (если есть)
+    if disp8 is not None:
+        code.append(disp8)
     
     return code
-
-
+    
 def encode_mov_mem_reg_indirect(base_reg, reg_info):
     """
     Кодирует MOV [base_reg], reg — косвенная адресация.

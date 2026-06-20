@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 
 def main():
-    # Диспетчер лежит в тесты/kvs_full_test.py
+    # Диспетчер лежит в тесты/прогон_тестов.py
     # Значит, корень с табличкой — та же папка (тесты/)
     tests_dir = Path(__file__).parent
     csv_file = tests_dir / "kvs_full_test.csv"
