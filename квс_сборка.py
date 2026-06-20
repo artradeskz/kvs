@@ -27,15 +27,15 @@ if __name__ == "__main__":
     elf_file = base_name + ".elf"
     
     stages = [
-        ("kvs_lexer.py", [source_file, tokens_file], "Лексический анализ"),
-        ("kvs_parser.py", [tokens_file, ast_file], "Парсинг"),
-        ("kvs_pass1.py", [ast_file, csv_file], "Первый проход: генерация кода и CSV"),
-        ("kvs_pass2.py", [csv_file], "2 проход"),
-        ("kvs_pass3.py", [ast_file, csv_file], "3 проход"),
-        ("kvs_pass4.py", [csv_file], "4 проход"),
-        ("kvs_pass5.py", [csv_file], "5 проход"),
-        ("kvs_pass6.py", [csv_file], "6 проход"),
-        ("kvs_builder.py", [csv_file, elf_file], "Сборка ELF"),
+        ("квс_лексер.py", [source_file, tokens_file], "Лексический анализ"),
+        ("квс_парсер.py", [tokens_file, ast_file], "Парсинг"),
+        ("квс_проход1.py", [ast_file, csv_file], "Первый проход: генерация кода и CSV"),
+        ("квс_проход2.py", [csv_file], "2 проход"),
+        ("квс_проход3.py", [ast_file, csv_file], "3 проход"),
+        ("квс_проход4.py", [csv_file], "4 проход"),
+        ("квс_проход5.py", [csv_file], "5 проход"),
+        ("квс_проход6.py", [csv_file], "6 проход"),
+        ("квс_финсбор.py", [csv_file, elf_file], "Сборка ELF"),
     ]
     
     for script, args, description in stages:
