@@ -2,10 +2,23 @@
 # -*- coding: utf-8 -*-
 
 """
-Лексер КВС
+Лексер КВС (русская версия)
 Принимает: исходный .квс файл
 Выдаёт: текстовый файл с токенами (по одному токену на строку)
 Формат вывода: ТИП:ЗНАЧЕНИЕ
+
+Все типы токенов переведены на русский язык:
+- СТРОКА   → строковый литерал
+- СЛОВО    → идентификатор
+- ЧИСЛО    → числовой литерал
+- ЗАПЯТАЯ  → разделитель
+- ДВОЕТОЧИЕ → для меток
+- СК_ОТКР  → [
+- СК_ЗАКР  → ]
+- ПЛЮС     → +
+- МИНУС    → -
+- ЗВЕЗДА   → *
+- НОВСТР   → маркер конца строки
 
 Поддерживает сложную адресацию:
 - [ ] - квадратные скобки
@@ -46,7 +59,7 @@ def is_dec_number(s):
     return True
 
 def tokenize_line(line, line_num):
-    """Разбирает строку в токены"""
+    """Разбирает строку в токены (русские названия типов)"""
     # Удаляем комментарии
     semi = -1
     for idx in range(len(line)):
@@ -85,43 +98,53 @@ def tokenize_line(line, line_num):
             if i >= n:
                 raise ValueError(error_unterminated_string(line_num))
             i += 1
-            tokens.append(('STRING', s))
+            tokens.append(('СТРОКА', s))
             continue
         
         # Одиночные символы-разделители
         if ch == ',':
-            tokens.append(('COMMA', ','))
+            tokens.append(('ЗАПЯТАЯ', ','))
             i += 1
             continue
         
         if ch == ':':
-            tokens.append(('COLON', ':'))
+            tokens.append(('ДВОЕТОЧИЕ', ':'))
             i += 1
             continue
         
-        # ТОКЕНЫ ДЛЯ СЛОЖНОЙ АДРЕСАЦИИ
+        # Токены для сложной адресации
         if ch == '[':
-            tokens.append(('LBRACKET', '['))
+            tokens.append(('СК_ОТКР', '['))
             i += 1
             continue
         
         if ch == ']':
-            tokens.append(('RBRACKET', ']'))
+            tokens.append(('СК_ЗАКР', ']'))
             i += 1
             continue
         
         if ch == '+':
-            tokens.append(('PLUS', '+'))
+            tokens.append(('ПЛЮС', '+'))
             i += 1
             continue
         
         if ch == '-':
-            tokens.append(('MINUS', '-'))
+            # Проверяем, не является ли минус частью отрицательного числа
+            if i + 1 < n and (line[i+1].isdigit() or line[i+1] == '0'):
+                j = i + 1
+                while j < n and (line[j].isdigit() or line[j] in 'xXabcdefABCDEF'):
+                    j += 1
+                word = line[i:j]
+                if is_hex_number(word) or is_dec_number(word):
+                    tokens.append(('ЧИСЛО', word))
+                    i = j
+                    continue
+            tokens.append(('МИНУС', '-'))
             i += 1
             continue
         
         if ch == '*':
-            tokens.append(('STAR', '*'))
+            tokens.append(('ЗВЕЗДА', '*'))
             i += 1
             continue
         
@@ -134,11 +157,11 @@ def tokenize_line(line, line_num):
         if word:
             # Определяем тип токена
             if is_hex_number(word):
-                tokens.append(('NUMBER', word))
+                tokens.append(('ЧИСЛО', word))
             elif is_dec_number(word):
-                tokens.append(('NUMBER', word))
+                tokens.append(('ЧИСЛО', word))
             else:
-                tokens.append(('WORD', word))
+                tokens.append(('СЛОВО', word))
         
         i = j
     
@@ -153,7 +176,7 @@ def lex_source(source_text):
         try:
             tokens = tokenize_line(line, line_num)
             if tokens:
-                all_tokens.append(('NEWLINE', str(line_num)))
+                all_tokens.append(('НОВСТР', str(line_num)))
                 for tok_type, tok_value in tokens:
                     all_tokens.append((tok_type, tok_value))
         except ValueError as e:

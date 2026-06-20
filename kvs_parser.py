@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Парсер КВС
-Принимает: файл токенов от лексера
+Парсер КВС (адаптирован под русские токены)
+Принимает: файл токенов от лексера (русские названия типов)
 Выдаёт: текстовый файл с AST-структурой
 
 Поддерживает сложную адресацию:
@@ -35,14 +35,13 @@ def memory_operand_to_ast_string(mem_op):
     elif addr_type == 'register_indirect':
         return f"MEM:reg_indirect:{mem_op[1]}"
     elif addr_type == 'complex':
-        # Пока не поддерживается, но зарезервировано
         return f"MEM:complex:{mem_op[1]}+{mem_op[2]}*{mem_op[3]}+{mem_op[4]}"
     else:
         return f"MEM:unknown"
 
 
 def read_tokens(input_file):
-    """Читает токены из файла"""
+    """Читает токены из файла (русские названия типов)"""
     tokens = []
     with open(input_file, 'r', encoding='utf-8') as f:
         for line in f:
@@ -94,21 +93,22 @@ class Parser:
         if tok is None:
             return False
         
-        if tok[0] == 'NEWLINE':
+        # Пропускаем маркер конца строки
+        if tok[0] == 'НОВСТР':
             self.next_token()
             tok = self.peek()
             if tok is None:
                 return False
         
-        if tok[0] == 'WORD':
-            # Проверяем, есть ли после слова двоеточие (метка)
-            if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1][0] == 'COLON':
+        # Проверяем, есть ли метка (СЛОВО за которым следует ДВОЕТОЧИЕ)
+        if tok[0] == 'СЛОВО':
+            if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1][0] == 'ДВОЕТОЧИЕ':
                 label_name = self.next_token()[1]
-                self.next_token()  # COLON
+                self.next_token()  # ДВОЕТОЧИЕ
                 self.parsed_lines.append(f"LABEL:{label_name}:{self.current_section}")
                 
                 next_tok = self.peek()
-                if next_tok and next_tok[0] != 'NEWLINE':
+                if next_tok and next_tok[0] != 'НОВСТР':
                     return self.parse_instruction_or_directive()
                 return True
         
@@ -116,10 +116,10 @@ class Parser:
     
     def parse_instruction_or_directive(self):
         tok = self.peek()
-        if tok is None or tok[0] == 'NEWLINE':
+        if tok is None or tok[0] == 'НОВСТР':
             return True
         
-        if tok[0] != 'WORD':
+        if tok[0] != 'СЛОВО':
             raise ValueError(f"Ожидалось слово, получено: {tok}")
         
         word = self.next_token()[1]
@@ -151,7 +151,7 @@ class Parser:
 
         # === Глобальные метки ===
         elif word == '.глобал':
-            label = self.expect('WORD')[1]
+            label = self.expect('СЛОВО')[1]
             self.parsed_lines.append(f"DIRECTIVE:{word}:{label}")
 
         # === Строковые директивы (запрещены в .бнд) ===
@@ -161,7 +161,7 @@ class Parser:
                     "Ошибка: секция .бнд не поддерживает инициализированные данные "
                     "(используйте .резб, .резс, .рездс, .резкс)"
                 )
-            string_tok = self.expect('STRING')
+            string_tok = self.expect('СТРОКА')
             self.parsed_lines.append(f"DIRECTIVE:{word}:{self.current_section}:{string_tok[1]}")
 
         # === Константы (запрещены в .бнд) ===
@@ -171,13 +171,11 @@ class Parser:
                     "Ошибка: секция .бнд не поддерживает инициализированные данные "
                     "(используйте .резб, .резс, .рездс, .резкс)"
                 )
-            name = self.expect('WORD')[1]
-            # Пропускаем '=', если есть
+            name = self.expect('СЛОВО')[1]
             eq_tok = self.peek()
-            if eq_tok and eq_tok[0] == 'WORD' and eq_tok[1] == '=':
+            if eq_tok and eq_tok[0] == 'СЛОВО' and eq_tok[1] == '=':
                 self.next_token()
-            # Значение может быть WORD или NUMBER
-            value_tok = self.expect_one_of(['WORD', 'NUMBER'])
+            value_tok = self.expect_one_of(['СЛОВО', 'ЧИСЛО'])
             self.parsed_lines.append(f"DIRECTIVE:{word}:{name}:{value_tok[1]}")
 
         # === Байты (запрещены в .бнд) ===
@@ -190,14 +188,13 @@ class Parser:
             bytes_list = []
             while True:
                 tok = self.peek()
-                if tok is None or tok[0] == 'NEWLINE' or tok[0] == 'COMMA':
-                    if tok and tok[0] == 'COMMA':
+                if tok is None or tok[0] == 'НОВСТР' or tok[0] == 'ЗАПЯТАЯ':
+                    if tok and tok[0] == 'ЗАПЯТАЯ':
                         self.next_token()
                     else:
                         break
                 else:
-                    # Может быть WORD (метка) или NUMBER (число)
-                    val_tok = self.expect_one_of(['WORD', 'NUMBER', 'STRING'])
+                    val_tok = self.expect_one_of(['СЛОВО', 'ЧИСЛО', 'СТРОКА'])
                     bytes_list.append(val_tok[1])
             self.parsed_lines.append(f"DIRECTIVE:{word}:{self.current_section}:" + ",".join(bytes_list))
 
@@ -207,7 +204,7 @@ class Parser:
                 raise ValueError(
                     f"Ошибка: директива {word} допустима только внутри секции .бнд"
                 )
-            count_tok = self.expect('NUMBER')
+            count_tok = self.expect('ЧИСЛО')
             count = int(count_tok[1])
             if count <= 0:
                 raise ValueError(
@@ -221,76 +218,46 @@ class Parser:
             raise ValueError(f"Неизвестная директива: {word}")
     
     def parse_operand(self):
-        """
-        Разбирает один операнд.
-        Возвращает строку (регистр, число, метка, строка, старый формат памяти)
-        или кортеж (новый формат памяти).
-        Поддерживает:
-        - регистры
-        - числа
-        - метки
-        - строки
-        - адресацию в квадратных скобках
-        """
+        """Разбирает один операнд"""
         tok = self.peek()
         if tok is None:
             return None
         
-        if tok[0] == 'LBRACKET':
-            self.next_token()  # съедаем '['
+        if tok[0] == 'СК_ОТКР':
+            self.next_token()
             return self.parse_memory_operand()
-        elif tok[0] == 'NUMBER':
+        elif tok[0] == 'ЧИСЛО':
             return self.next_token()[1]
-        elif tok[0] == 'STRING':
+        elif tok[0] == 'СТРОКА':
             return self.next_token()[1]
-        elif tok[0] == 'WORD':
+        elif tok[0] == 'СЛОВО':
             return self.next_token()[1]
         else:
             raise ValueError(f"Неожиданный токен в операнде: {tok}")
     
     def parse_memory_operand(self):
-        """
-        Разбирает операнд памяти.
-        Открывающая скобка уже прочитана в parse_operand.
-        
-        Возвращает:
-        - строку "[выражение]" для абсолютной адресации (старый формат)
-        - кортеж (addr_type, base_reg, displacement, label) для косвенной
-        
-        Поддерживает:
-        [регистр]           → косвенная адресация (кортеж)
-        [число]             → абсолютная (строка)
-        [метка]             → абсолютная (строка)
-        [регистр + ...]     → пока не поддерживается (строка)
-        """
+        """Разбирает операнд памяти"""
         parts = []
         
-        # Разбираем содержимое до закрывающей скобки
         while True:
             tok = self.peek()
             if tok is None:
                 raise ValueError("Незакрытая квадратная скобка")
             
-            if tok[0] == 'RBRACKET':
+            if tok[0] == 'СК_ЗАКР':
                 self.next_token()
                 break
             
-            if tok[0] in ('WORD', 'NUMBER', 'PLUS', 'MINUS', 'STAR'):
+            if tok[0] in ('СЛОВО', 'ЧИСЛО', 'ПЛЮС', 'МИНУС', 'ЗВЕЗДА'):
                 parts.append(self.next_token()[1])
             else:
                 raise ValueError(f"Неожиданный токен в адресации: {tok}")
         
-        # Анализируем собранные части
         if len(parts) == 1:
             part = parts[0]
-            # Проверяем, регистр ли это
             if part in REGISTERS:
-                # Косвенная адресация: [регистр]
                 return make_memory_operand('register_indirect', base_reg=part)
-            # Иначе: [число] или [метка] — возвращаем строку (старый формат)
         
-        # Старое поведение для всего остального
-        # (абсолютная адресация, комплексная - пока не поддерживается)
         expr = ' '.join(parts)
         return f"[{expr}]"
     
@@ -301,21 +268,18 @@ class Parser:
         operands = []
         while True:
             tok = self.peek()
-            if tok is None or tok[0] == 'NEWLINE':
+            if tok is None or tok[0] == 'НОВСТР':
                 break
-            if tok[0] == 'COMMA':
+            if tok[0] == 'ЗАПЯТАЯ':
                 self.next_token()
                 continue
             operands.append(self.parse_operand())
         
-        # Преобразуем операнды в строки для AST
         str_operands = []
         for op in operands:
             if isinstance(op, tuple) and len(op) >= 2 and op[0] in ('absolute', 'register_indirect', 'complex'):
-                # Это кортеж памяти
                 str_operands.append(memory_operand_to_ast_string(op))
             else:
-                # Это обычная строка (регистр, число, метка, старый формат памяти)
                 str_operands.append(op)
         
         self.parsed_lines.append(f"INSTR:{mnemonic}:{self.current_section}:" + ",".join(str_operands))
