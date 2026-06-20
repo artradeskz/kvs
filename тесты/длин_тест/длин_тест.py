@@ -29,7 +29,7 @@ def main():
     
     # 1. Сборка
     print("DEBUG: Сборка длин_тест.квс", file=sys.stderr)
-    build = subprocess.run(["python3", "kvs_build.py", SOURCE_REL], 
+    build = subprocess.run(["python3", "квс_сборка.py", SOURCE_REL], 
                           capture_output=True, text=True)
     
     if build.returncode != 0:

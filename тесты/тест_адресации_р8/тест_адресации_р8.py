@@ -24,7 +24,7 @@ def clean():
 
 def build():
     os.chdir(PROJECT_ROOT)
-    build = subprocess.run(["python3", "kvs_build.py", str(SOURCE_REL)], 
+    build = subprocess.run(["python3", "квс_сборка.py", str(SOURCE_REL)], 
                           capture_output=True, text=True)
     if build.returncode != 0:
         print(f"❌ Ошибка сборки: {build.returncode}", file=sys.stderr)

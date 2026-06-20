@@ -32,7 +32,7 @@ def main():
     # 1. Сборка
     print("DEBUG: Сборка вычитание.квс", file=sys.stderr)
     build = subprocess.run(
-        ["python3", "kvs_build.py", SOURCE_REL],
+        ["python3", "квс_сборка.py", SOURCE_REL],
         capture_output=True, text=True
     )
     

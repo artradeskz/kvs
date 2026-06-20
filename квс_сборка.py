@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""kvs_build.py
+"""квс_сборка.py
 Главный сборочный скрипт КВС
 Последовательно запускает все этапы компиляции
 """
@@ -11,7 +11,7 @@ import subprocess
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Использование: python kvs_build.py <файл.квс>")
+        print("Использование: python квс_сборка.py <файл.квс>")
         sys.exit(1)
     
     source_file = sys.argv[1]
