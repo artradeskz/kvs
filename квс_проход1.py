@@ -315,7 +315,8 @@ def parse_ast_line(line):
         }
     
     elif line_type == "DIRECTIVE":
-        parts = line.split(':')
+        # Разбиваем максимум на 4 части: DIRECTIVE, имя, секция, остальное
+        parts = line.split(':', 3)
         directive = parts[1] if len(parts) > 1 else ""
         
         if directive in ('.текст', '.данные', '.бнд'):
@@ -326,7 +327,7 @@ def parse_ast_line(line):
             return "DIRECTIVE", {
                 'directive': directive,
                 'section': parts[2] if len(parts) > 2 else "",
-                'string': parts[3] if len(parts) > 3 else ""
+                'string': parts[3] if len(parts) > 3 else ""  # ← вся оставшаяся строка
             }
         elif directive == '.константа':
             return "DIRECTIVE", {
@@ -357,7 +358,6 @@ def parse_ast_line(line):
         }
     
     return line_type, {}
-
 
 def get_stub_size(mnemonic, operands):
     if mnemonic in ("переход", "вызвать"):
