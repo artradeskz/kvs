@@ -189,6 +189,10 @@ def encode_mov_mem_reg_absolute(reg_info, mem_info, current_pos, vaddr_text):
 def encode_mov_reg_mem_indirect(reg_info: dict, base_reg: str) -> bytearray:
     """
     Кодирует MOV reg, [base_reg] — косвенная адресация через регистр.
+    
+    Особые случаи x86-64:
+    - [rsp] и [r12] (индексы 4 и 12) требуют SIB-байта при mod=00
+    - [rbp] и [r13] (индексы 5 и 13) требуют disp8=0 при mod=00
     """
     code = bytearray()
     
@@ -239,16 +243,29 @@ def encode_mov_reg_mem_indirect(reg_info: dict, base_reg: str) -> bytearray:
     if base_index >= 8:
         rex |= 0x01  # REX.B = 1
     
-    # === 4. Формируем ModR/M байт ===
-    if (base_index & 7) == 5:
-        # [rbp] или [r13] требуют disp8=0
-        modrm = 0x40 | ((reg_index & 7) << 3) | 5
-        modrm_byte = modrm
-        disp8 = 0x00
-    else:
-        modrm = ((reg_index & 7) << 3) | (base_index & 7)
-        modrm_byte = modrm
+    # === 4. Формируем ModR/M и SIB байты ===
+    base_low = base_index & 7  # младшие 3 бита индекса
+    
+    if base_low == 4:
+        # Особый случай: [rsp] или [r12] — требуется SIB-байт
+        # В x86-64 mod=00 с r/m=4 означает [SIB] без смещения
+        # SIB: base=4 (rsp/r12), index=4 (нет индексного регистра), scale=0
+        modrm_byte = 0x00 | ((reg_index & 7) << 3) | 0x04
+        sib_byte = 0x20 | (4 << 3) | 4  # scale=0, index=4(нет), base=4
         disp8 = None
+        has_sib = True
+    elif base_low == 5:
+        # Особый случай: [rbp] или [r13] — требуется disp8=0
+        # В x86-64 mod=00 с r/m=5 означает [RIP+disp32], 
+        # поэтому для [rbp]/[r13] используем mod=01 с disp8=0
+        modrm_byte = 0x40 | ((reg_index & 7) << 3) | 0x05
+        disp8 = 0x00
+        has_sib = False
+    else:
+        # Обычный случай: [reg] — mod=00, без SIB, без смещения
+        modrm_byte = ((reg_index & 7) << 3) | base_low
+        disp8 = None
+        has_sib = False
     
     # === 5. Собираем инструкцию ===
     
@@ -266,12 +283,17 @@ def encode_mov_reg_mem_indirect(reg_info: dict, base_reg: str) -> bytearray:
     # 5d. ModR/M байт
     code.append(modrm_byte)
     
-    # 5e. Disp8 (если есть)
+    # 5e. SIB байт (только для RSP/R12)
+    if has_sib:
+        code.append(sib_byte)
+    
+    # 5f. Disp8 (только для RBP/R13)
     if disp8 is not None:
         code.append(disp8)
     
     return code
     
+       
 def encode_mov_mem_reg_indirect(base_reg, reg_info):
     """
     Кодирует MOV [base_reg], reg — косвенная адресация.
