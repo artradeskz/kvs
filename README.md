@@ -482,6 +482,8 @@ gdb ./программа.elf
 
 **Подсветка синтаксиса для VS Code** — доступно расширение [Universal Assembly Syntax Highlighting](https://github.com/artradeskz/Universal-Assembly-Syntax-Highlighting) с поддержкой языка КВС (русские инструкции, регистры, секции и директивы)
 
+**КМП - кодомнемонический преобразователь.** [Дизассемблер]https://github.com/artradeskz/kmp на языке квс. Выводит мнемоники на русском.
+
 ---
 
 ## 📈 План развития
